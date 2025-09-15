@@ -693,6 +693,9 @@ class GaussianTrainer(mp.Process):
 
         self.commond = None
 
+        self.TDOM_Cam = None
+        self.TDOM_Cam_savetimes = 0
+
     def InitialGaussianTrain(self):
         # 设置初始场景的文件路径
         self.args.model_path = self.model_path_list[0] if self.args.ContinueFromImageNo == -1 else self.model_path_list[self.args.ContinueFromImageNo - self.args.StartFromImageNo]
@@ -1162,6 +1165,38 @@ class GaussianTrainer(mp.Process):
                 PSNR_File.write(str(self.AlreadyTrainingIterations) + f": {PSNR}, Visible_Gaussians_Num: {visibility_filter.shape[0]}\n")
                 PSNR_File.close()
 
+    # 持续渲染特定视角的TDOM
+    def render_TDOM(self, getdemo=False):
+        with torch.no_grad():
+            rendering_Dirpath = os.path.join(self.args.Model_Path_Dir, "TDOM")
+            print(f"GaussianTrainer: Saving TDOM at {rendering_Dirpath}...")
+
+            W, H = 4000, 5000
+
+            if self.TDOM_Cam is None:
+                T = torch.tensor([10.0379, 58.1547, -0.5450])  # 平移向量，表示相机位置
+                R = np.array([[0.98391801, 0.17848249, 0.00702562],
+                              [-0.17858312, 0.98375663, 0.01819236],
+                              [-0.00366448, -0.01915445, 0.99980982]])
+
+                FoVx = self.args.TDOM_FoVx
+                aspect_ratio = 8000 / 10000
+                FoVy = 2 * math.atan((1 / aspect_ratio) * math.tan(FoVx / 2))
+
+                # 创建 DummyCamera 实例
+                self.TDOM_Cam = DummyCamera(R, T, FoVx, FoVy, W, H)
+                # 创建 DummyPipeline 实例
+                self.TDOM_pipeline = DummyPipeline()
+
+            result = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background,
+                            Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
+
+            # 保存渲染影像
+            os.makedirs(rendering_Dirpath, exist_ok=True)
+            rendering_filepath = os.path.join(rendering_Dirpath, str(self.TDOM_Cam_savetimes) + ".jpg")
+            torchvision.utils.save_image(result, rendering_filepath)
+            self.TDOM_Cam_savetimes = self.TDOM_Cam_savetimes + 1
+
     # 该函数将被送入到一个线程中，用于渐进式训练中的数据读取以及预处理
     def run(self):
         while True:
@@ -1226,6 +1261,9 @@ class GaussianTrainer(mp.Process):
                     # 对扩张后的场景进行训练
                     if not self.args.skip_MergeSceneTraining:
                         self.Train_Gaussians((self.args.IterationPerMergeScene + self.args.GlobalOptimizationIteration) * NewImagesNum, "On_The_Fly")
+
+                    if self.args.render_TDOM:
+                        self.render_TDOM()
 
                     # 向前端传递信息，表示这一张影像已经完成训练，可以将下一张影像的相关信息传输到后端
                     msg = ["Progressive_finish"]

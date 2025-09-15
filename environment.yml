@@ -1,4 +1,4 @@
-name: taming_3dgs_V3
+name: ATDOM
 channels:
   - pytorch
   - conda-forge

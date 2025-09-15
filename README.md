@@ -7,12 +7,12 @@ Yiwei Xu, Xiang Wang, Yifei Yu, Wentian Gan, Luca Morelli, Giulio Perda, Xiongwu
 
 ```shell
 # SSH
-git clone git@github.com:xywjohn/GS_On-The-Fly.git --recursive
+git clone git@github.com:xywjohn/A-TDOM.git --recursive
 ```
 or
 ```shell
 # HTTPS
-git clone https://github.com/xywjohn/GS_On-The-Fly --recursive
+git clone https://github.com/xywjohn/A-TDOM --recursive
 ```
 
 After that, please manually decompress the diff-gaussian-rasterization.zip, fused-ssim.zip and simple-knn.zip archive located under the submodules directory.

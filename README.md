@@ -96,7 +96,7 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
 ```
 
 <details>
-<summary><span style="font-weight: bold;">Necessary command Line Arguments for ContinuosProgressiveTrain.py</span></summary>
+<summary><span style="font-weight: bold;">Necessary command Line Arguments for ContinuosProgressiveTrain4.py</span></summary>
 
   #### --Source_Path_Dir {str}
   Path to the source directory containing all image data, camera pose information, and sparse point cloud.
@@ -120,7 +120,7 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
 </details>
 
 <details>
-<summary><span style="font-weight: bold;">Optional command Line Arguments for ContinuosProgressiveTrain.py</span></summary>
+<summary><span style="font-weight: bold;">Optional command Line Arguments for ContinuosProgressiveTrain4.py</span></summary>
 
   #### --GetDemo
   If you want to obtain a Demo about progressive training, use this command.
@@ -141,4 +141,5 @@ If you want to generate TDOM while training 3DGS field, please use 2 commonds: `
 
 ```shell
 python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Model_Path_Dir .../OutputDir --FinalOptimizationIterations 4000 --StartFromImageNo 30 --OriginImageHeight 1080 --OriginImageWidth 1920 --points_per_triangle 30 --Use_Tri_Mask --render_TDOM --TDOM_FoVx 3.00
+
 ```

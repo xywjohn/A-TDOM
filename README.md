@@ -1,6 +1,7 @@
 # A-TDOM: Active TDOM via On-the-Fly 3DGS
 Yiwei Xu, Xiang Wang, Yifei Yu, Wentian Gan, Luca Morelli, Giulio Perda, Xiongwu Xiao, Zongqian Zhan, Xin Wang, and Fabio Remondino
 
+[![arxiv](https://arxiv.org/abs/2509.12759)
 ![image](0.png)
 
 ## Cloning the Repository
@@ -143,5 +144,6 @@ If you want to generate TDOM while training 3DGS field, please use 2 commonds: `
 python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Model_Path_Dir .../OutputDir --FinalOptimizationIterations 4000 --StartFromImageNo 30 --OriginImageHeight 1080 --OriginImageWidth 1920 --points_per_triangle 30 --Use_Tri_Mask --render_TDOM --TDOM_FoVx 3.00
 
 ```
+
 
 

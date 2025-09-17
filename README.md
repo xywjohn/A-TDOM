@@ -145,6 +145,18 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
 
 ```
 
+## BibTeX
+```
+@misc{xu2025atdomactivetdomonthefly,
+      title={A-TDOM: Active TDOM via On-the-Fly 3DGS}, 
+      author={Yiwei Xu and Xiang Wang and Yifei Yu and Wentian Gan and Luca Morelli and Giulio Perda and Xiongwu Xiao and Zongqian Zhan and Xin Wang and Fabio Remondino},
+      year={2025},
+      eprint={2509.12759},
+      archivePrefix={arXiv},
+      primaryClass={cs.CV},
+      url={https://arxiv.org/abs/2509.12759}, 
+}
+```
 
 
 

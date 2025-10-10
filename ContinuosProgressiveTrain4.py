@@ -693,8 +693,7 @@ class GaussianTrainer(mp.Process):
 
         self.commond = None
 
-        self.TDOM_Cam = None
-        self.TDOM_Cam_savetimes = 0
+        self.imagenum = self.args.StartFromImageNo
 
     def InitialGaussianTrain(self):
         # 设置初始场景的文件路径
@@ -949,7 +948,7 @@ class GaussianTrainer(mp.Process):
                 # 每十次训练更新一次进度条
                 progress_bar.update(1)
                 progress_bar.set_postfix({"Loss": f"{self.ema_loss_for_log:.{7}f}"})
-                if sub_iteration + 1 == iteration:
+                if sub_iteration == iteration:
                     EvaluateRender = True
                     progress_bar.close()
 
@@ -1165,38 +1164,6 @@ class GaussianTrainer(mp.Process):
                 PSNR_File.write(str(self.AlreadyTrainingIterations) + f": {PSNR}, Visible_Gaussians_Num: {visibility_filter.shape[0]}\n")
                 PSNR_File.close()
 
-    # 持续渲染特定视角的TDOM
-    def render_TDOM(self, getdemo=False):
-        with torch.no_grad():
-            rendering_Dirpath = os.path.join(self.args.Model_Path_Dir, "TDOM")
-            print(f"GaussianTrainer: Saving TDOM at {rendering_Dirpath}...")
-
-            W, H = 4000, 5000
-
-            if self.TDOM_Cam is None:
-                T = torch.tensor([10.0379, 58.1547, -0.5450])  # 平移向量，表示相机位置
-                R = np.array([[0.98391801, 0.17848249, 0.00702562],
-                              [-0.17858312, 0.98375663, 0.01819236],
-                              [-0.00366448, -0.01915445, 0.99980982]])
-
-                FoVx = self.args.TDOM_FoVx
-                aspect_ratio = 8000 / 10000
-                FoVy = 2 * math.atan((1 / aspect_ratio) * math.tan(FoVx / 2))
-
-                # 创建 DummyCamera 实例
-                self.TDOM_Cam = DummyCamera(R, T, FoVx, FoVy, W, H)
-                # 创建 DummyPipeline 实例
-                self.TDOM_pipeline = DummyPipeline()
-
-            result = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background,
-                            Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
-
-            # 保存渲染影像
-            os.makedirs(rendering_Dirpath, exist_ok=True)
-            rendering_filepath = os.path.join(rendering_Dirpath, str(self.TDOM_Cam_savetimes) + ".jpg")
-            torchvision.utils.save_image(result, rendering_filepath)
-            self.TDOM_Cam_savetimes = self.TDOM_Cam_savetimes + 1
-
     # 该函数将被送入到一个线程中，用于渐进式训练中的数据读取以及预处理
     def run(self):
         while True:
@@ -1218,6 +1185,8 @@ class GaussianTrainer(mp.Process):
                         msg = [image]
                         self.DataPreProccesser_queue.put(msg)
                 elif Commond_from_DataPreProccesser[0] == "Progressive_Train":
+                    self.imagenum += 1
+                    print(f"-----------------------------This is {self.imagenum} image-----------------------------")
                     print("GaussianTrainer: Get Information from DataPreProccesser...")
 
                     self.scene.scene_info_traincam = Commond_from_DataPreProccesser[1]
@@ -1262,9 +1231,6 @@ class GaussianTrainer(mp.Process):
                     if not self.args.skip_MergeSceneTraining:
                         self.Train_Gaussians((self.args.IterationPerMergeScene + self.args.GlobalOptimizationIteration) * NewImagesNum, "On_The_Fly")
 
-                    if self.args.render_TDOM:
-                        self.render_TDOM()
-
                     # 向前端传递信息，表示这一张影像已经完成训练，可以将下一张影像的相关信息传输到后端
                     msg = ["Progressive_finish"]
                     self.DataPreProccesser_queue.put(msg)
@@ -1296,13 +1262,14 @@ class On_the_Fly_GS:
         self.GaussianTrainer.source_path_list = self.DataPreProccesser.source_path_list
         self.GaussianTrainer.model_path_list = self.DataPreProccesser.model_path_list
 
-        print("Start Thread...")
+        print("Start Thread...\n")
         self.GaussianTrainer_Thread = mp.Process(target=self.GaussianTrainer.run)
         self.GaussianTrainer_Thread.start()
         self.DataPreProccesser.run()
 
         self.GaussianTrainer_queue.put(["stop"])
         self.GaussianTrainer_Thread.join()
+        print("\nStart Thread...")
 
 if __name__ == "__main__":
     mp.set_start_method("spawn")

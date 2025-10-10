@@ -21,9 +21,9 @@ After that, please manually decompress the diff-gaussian-rasterization.zip, fuse
 ## Setup
 
 ```shell
+cd .../A-TDOM
 conda env create --file environment.yml
 conda activate ATDOM
-cd .../A-TDOM
 
 pip install pytorch3d
 pip install open3d
@@ -157,6 +157,7 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
       url={https://arxiv.org/abs/2509.12759}, 
 }
 ```
+
 
 
 

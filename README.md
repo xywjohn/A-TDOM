@@ -130,8 +130,8 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
   If you want to obtain the TDOM each time you add a new image, use this command.
   #### --TDOM_FoVx {float}
   Control the field of view during TDOM generation, with a value not exceeding 3.14.
-  #### --render_target
-  If you want to render a specific view after each acquisition of a new image, use this command.
+  #### --render_RGB
+  If you want to render RGB result after each acquisition of a new image, use this command.
   #### --NoDebug
   If you wish to only train the model without performing any other operations, use this instruction.
 
@@ -158,6 +158,7 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
       url={https://arxiv.org/abs/2509.12759}, 
 }
 ```
+
 
 
 

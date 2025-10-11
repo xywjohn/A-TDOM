@@ -32,6 +32,8 @@ import copy
 from utils.graphics_utils import getWorld2View2, getProjectionMatrix
 import torchvision
 import torch.multiprocessing as mp
+from skimage.metrics import structural_similarity as ssim
+import lpips
 
 try:
     from torch.utils.tensorboard import SummaryWriter
@@ -40,6 +42,16 @@ except ImportError:
     TENSORBOARD_FOUND = False
 
 WARNED = False
+
+def Get_lpips(rgbs: torch.Tensor, target_rgbs: torch.Tensor, lpips_vgg):
+    gt = target_rgbs.unsqueeze(0) * 2 - 1
+    pred = rgbs.unsqueeze(0) * 2 - 1
+
+    lpips_vgg_i = lpips_vgg(gt, pred, normalize=True)
+    # lpips_alex_i = lpips_alex(gt, pred, normalize=True)
+    # lpips_squeeze_i = lpips_squeeze(gt, pred, normalize=True)
+
+    return {'vgg': lpips_vgg_i.item()}
 
 def prepare_output_and_logger(args, Create_for_new=False, Silence=False):
     # 创建对应的输出文件夹
@@ -195,6 +207,53 @@ def str2list(str):
     return list
 
 def Get_LogImage(image, image_name="", OutputDirPath="", sigma=1.0, MaxGradLog=-1, save=False):
+    # ---- 1️⃣ 确保为numpy数组 ----
+    if isinstance(image, torch.Tensor):
+        image = image.detach().cpu().numpy()
+
+    # ---- 2️⃣ 自动判断通道顺序 ----
+    if image.ndim == 3:
+        if image.shape[0] == 3:  # (3, H, W)
+            R, G, B = image[0], image[1], image[2]
+        elif image.shape[2] == 3:  # (H, W, 3)
+            R, G, B = image[:, :, 0], image[:, :, 1], image[:, :, 2]
+        else:
+            raise ValueError(f"Unexpected image shape {image.shape}")
+    else:
+        raise ValueError(f"Invalid image dimensions: {image.shape}")
+
+    # ---- 3️⃣ 计算灰度图 ----
+    gray = 0.2989 * R + 0.5870 * G + 0.1140 * B
+    gray = gray.astype(np.float32)
+
+    # ---- 4️⃣ 转换并归一化到0-255 ----
+    image = np.clip(gray * 255, 0, 255).astype(np.uint8)
+
+    # ---- 5️⃣ 高斯模糊 + LoG ----
+    blurred = cv2.GaussianBlur(image, (0, 0), sigmaX=sigma, sigmaY=sigma)
+    log = cv2.Laplacian(blurred, cv2.CV_64F)
+    log_abs = np.abs(log)
+
+    # ---- 6️⃣ 归一化 ----
+    if MaxGradLog <= 0 or np.max(log_abs) >= MaxGradLog:
+        log_norm = log_abs / np.max(log_abs)
+        MG = np.max(log_abs)
+    else:
+        log_norm = log_abs / MaxGradLog
+        MG = MaxGradLog
+
+    psi = np.minimum(log_norm, 1.0)
+    psi_inverted = psi
+
+    # ---- 7️⃣ 保存结果 ----
+    if save and OutputDirPath and image_name:
+        os.makedirs(OutputDirPath, exist_ok=True)
+        save_path = os.path.join(OutputDirPath, f"{image_name}.jpg")
+        cv2.imwrite(save_path, (psi_inverted * 255).astype(np.uint8))
+
+    return psi, MG
+
+def Get_LogImage_origin(image, image_name="", OutputDirPath="", sigma=1.0, MaxGradLog=-1, save=False):
     R, G, B = image[0], image[1], image[2]
     gray = 0.2989 * R + 0.5870 * G + 0.1140 * B
 
@@ -634,6 +693,9 @@ class DataPreProccesser(mp.Process):
 
                         ProgressiveTrainingTime += 1
                     else:
+                        msg = ["Final_Refinement_Prepare"]
+                        self.GaussianTrainer_queue.put(msg)
+
                         # 像后端发送指令和数据，开始进行最终的全局优化，此时，需要注意先等后端把上一张影像完成训练之后，再进行传输
                         while True:
                             if not self.DataPreProccesser_queue.empty():
@@ -700,6 +762,13 @@ class GaussianTrainer(mp.Process):
         self.TDOM_Cam = None
 
         self.TimeCost = {"GaussianInitial": 0.0, "ProgressiveTrain": 0.0, "FinalRefinement": 0.0}
+
+        self.EvaluateDiary = None
+
+        self.Finish = False
+
+        # 在SLAM数据集上可能出现训练速度快于前端处理速度的现象，因此该布尔值用于表示是否已经完成“Render_New”这个操作
+        self.RenderNewDone = False
 
     def InitialGaussianTrain(self):
         # 设置初始场景的文件路径
@@ -808,8 +877,12 @@ class GaussianTrainer(mp.Process):
                         msg = [image]
                         self.DataPreProccesser_queue.put(msg)
 
+                        self.RenderNewDone = True
+
                         self.commond = None
                 elif self.commond[0] == "Render_New" and sub_iteration <= iteration / 2:
+                    pass
+                elif self.commond[0] == "Final_Refinement_Prepare":
                     pass
                 elif self.commond[0] == "Final_Refinement":
                     pass
@@ -1089,6 +1162,12 @@ class GaussianTrainer(mp.Process):
         # Report test and samples of training set
         torch.cuda.empty_cache()
 
+        if self.Finish:
+            lpips_vgg = lpips.LPIPS(net='vgg').eval().to("cuda")
+
+        if self.EvaluateDiary is None:
+            self.EvaluateDiary = open(os.path.join(self.args.Model_Path_Dir, "Intermediate_Results", "eval.txt"), "w")
+
         if self.ChosenImageNames == []:
             validation_configs = ({'name': 'test', 'cameras': self.scene.getTestCameras()},
                                   {'name': 'train', 'cameras': self.scene.getTrainCameras()})
@@ -1101,6 +1180,8 @@ class GaussianTrainer(mp.Process):
             if config['cameras'] and len(config['cameras']) > 0:
                 l1_test = 0.0
                 psnr_test = 0.0
+                lpips_test = 0.0
+                ssim_test = 0.0
 
                 PSNRs = []
                 ErrorImageNum = 0
@@ -1115,15 +1196,36 @@ class GaussianTrainer(mp.Process):
                         PSNR = psnr(image, gt_image, viewpoint.Tri_Mask).mean().double()
                         psnr_test += PSNR
                         PSNRs.append(PSNR)
+
+                        if self.Finish:
+                            lpips_test += Get_lpips(image, gt_image, lpips_vgg)['vgg']
+
+                            # 自动选择合适的 win_size，避免小图像报错
+                            np_image = image.detach().cpu().numpy().astype(np.float32)
+                            np_gt_image = gt_image.detach().cpu().numpy().astype(np.float32)
+
+                            min_dim = min(np_image.shape[:2])
+                            win_size = min(7, min_dim) if min_dim >= 7 else min_dim
+
+                            ssim_test += ssim(np_gt_image, np_image, channel_axis=-1, data_range=1, win_size=win_size)
+
                     else:
                         ErrorImageNum = ErrorImageNum + 1
 
                 psnr_test /= len(config['cameras']) - ErrorImageNum
+                ssim_test /= len(config['cameras']) - ErrorImageNum
+                lpips_test /= len(config['cameras']) - ErrorImageNum
                 l1_test /= len(config['cameras']) - ErrorImageNum
-                print("\n[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {}".format(self.AlreadyTrainingIterations,
+                print("\n[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {} SSIM {} LPIPS {}".format(self.AlreadyTrainingIterations,
                                                                                      config['name'], l1_test,
                                                                                      self.gaussians.get_xyz.shape[0],
-                                                                                     psnr_test))
+                                                                                     psnr_test, ssim_test, lpips_test))
+
+                self.EvaluateDiary.write("[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {} SSIM {} LPIPS {}\n".format(self.AlreadyTrainingIterations,
+                                                                                     config['name'], l1_test,
+                                                                                     self.gaussians.get_xyz.shape[0],
+                                                                                     psnr_test, ssim_test, lpips_test))
+
                 # self.Diary.write(
                 #     "[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {}\n".format(self.AlreadyTrainingIterations,
                 #                                                                    config['name'], l1_test,
@@ -1222,6 +1324,7 @@ class GaussianTrainer(mp.Process):
                         # 向前端传递信息
                         msg = [image]
                         self.DataPreProccesser_queue.put(msg)
+                        self.RenderNewDone = True
                 elif Commond_from_DataPreProccesser[0] == "Progressive_Train":
                     time1 = time.time()
                     self.imagenum += 1
@@ -1273,17 +1376,45 @@ class GaussianTrainer(mp.Process):
                     time2 = time.time()
                     self.TimeCost["ProgressiveTrain"] += time2 - time1
 
+                    # 等待self.RenderNewDone变为True
+                    while not self.RenderNewDone:
+                        if not self.GaussianTrainer_queue.empty() or self.commond is not None:
+                            if self.commond is None:
+                                self.commond = self.GaussianTrainer_queue.get()
+                            if self.commond[0] == "Render_New":
+                                with torch.no_grad():
+                                    NewCam = self.commond[1]
+                                    render_pkg = render(NewCam, self.gaussians, self.args, self.bg, Render_Mask=NewCam.Tri_Mask)
+                                    image = render_pkg["render"]
+
+                                    # 向前端传递信息
+                                    msg = [image]
+                                    self.DataPreProccesser_queue.put(msg)
+
+                                    self.RenderNewDone = True
+
+                                    self.commond = None
+                            elif self.commond[0] == "Final_Refinement_Prepare":
+                                self.RenderNewDone = True
+                                self.commond = None
+
                     # 向前端传递信息，表示这一张影像已经完成训练，可以将下一张影像的相关信息传输到后端
                     msg = ["Progressive_finish"]
                     self.DataPreProccesser_queue.put(msg)
+                    self.RenderNewDone = False
+
                 elif Commond_from_DataPreProccesser[0] == "Final_Refinement":
                     time1 = time.time()
                     self.scene.model_path = Commond_from_DataPreProccesser[1]
                     if not self.args.skip_GlobalOptimization:
                         self.Train_Gaussians(self.args.FinalOptimizationIterations, "Final_Refinement")
+                        self.EvaluateDiary.close()
 
                     time2 = time.time()
                     self.TimeCost["FinalRefinement"] += time2 - time1
+
+                    self.Finish = True
+                    self.Evaluate("FinalRefinement", True)
 
                     self.Render_Evaluate_All_Images()
 

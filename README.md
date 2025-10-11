@@ -116,8 +116,6 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
   The original image width input into On-Fly SfM.
   #### --points_per_triangle {int}
   The number of points collected in each triangle when conducting point sampling based on the Delunay triangulation.
-  #### --ProgressiveModelOutput
-  Save gaussians before a new image is acquired.
 
 </details>
 
@@ -158,6 +156,7 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
       url={https://arxiv.org/abs/2509.12759}, 
 }
 ```
+
 
 
 

@@ -638,6 +638,7 @@ class DataPreProccesser(mp.Process):
                         while True:
                             if not self.DataPreProccesser_queue.empty():
                                 if self.DataPreProccesser_queue.get()[0] == "Progressive_finish":
+                                    print("*****************************************************************************")
                                     print("DataPreProccesser: Start Final Refinement...")
                                     self.args.source_path = self.source_path_list[-2]
                                     self.args.model_path = self.model_path_list[-2]
@@ -698,6 +699,8 @@ class GaussianTrainer(mp.Process):
 
         self.TDOM_Cam = None
 
+        self.TimeCost = {"GaussianInitial": 0.0, "ProgressiveTrain": 0.0, "FinalRefinement": 0.0}
+
     def InitialGaussianTrain(self):
         # 设置初始场景的文件路径
         self.args.model_path = self.model_path_list[0] if self.args.ContinueFromImageNo == -1 else self.model_path_list[self.args.ContinueFromImageNo - self.args.StartFromImageNo]
@@ -728,8 +731,11 @@ class GaussianTrainer(mp.Process):
         self.gaussians.training_setup(self.args)
 
         # 进行初始模型的训练
+        time1 = time.time()
         if (not self.args.skip_FirstSceneTraining) and self.args.ContinueFromImageNo == -1:
             self.Train_Gaussians(self.args.IterationFirstScene, "Initialization")
+        time2 = time.time()
+        self.TimeCost["GaussianInitial"] = time2 - time1
 
         # 向前端传递信息，表示初始训练已经完成，可以开始读取后续的影像
         self.SendImagePos_to_DataPreProccesser(True)
@@ -1217,6 +1223,7 @@ class GaussianTrainer(mp.Process):
                         msg = [image]
                         self.DataPreProccesser_queue.put(msg)
                 elif Commond_from_DataPreProccesser[0] == "Progressive_Train":
+                    time1 = time.time()
                     self.imagenum += 1
                     print(f"-----------------------------This is {self.imagenum} image-----------------------------")
                     print("GaussianTrainer: Get Information from DataPreProccesser...")
@@ -1263,15 +1270,25 @@ class GaussianTrainer(mp.Process):
                     if not self.args.skip_MergeSceneTraining:
                         self.Train_Gaussians((self.args.IterationPerMergeScene + self.args.GlobalOptimizationIteration) * NewImagesNum, "On_The_Fly")
 
+                    time2 = time.time()
+                    self.TimeCost["ProgressiveTrain"] += time2 - time1
+
                     # 向前端传递信息，表示这一张影像已经完成训练，可以将下一张影像的相关信息传输到后端
                     msg = ["Progressive_finish"]
                     self.DataPreProccesser_queue.put(msg)
                 elif Commond_from_DataPreProccesser[0] == "Final_Refinement":
+                    time1 = time.time()
                     self.scene.model_path = Commond_from_DataPreProccesser[1]
                     if not self.args.skip_GlobalOptimization:
                         self.Train_Gaussians(self.args.FinalOptimizationIterations, "Final_Refinement")
 
+                    time2 = time.time()
+                    self.TimeCost["FinalRefinement"] += time2 - time1
+
                     self.Render_Evaluate_All_Images()
+
+                    msg = ["SaveTimeCost", self.TimeCost, self.imagenum]
+                    self.DataSaver_queue.put(msg)
 
                     # 像后端传递信息
                     msg = ["GetDemo"]
@@ -1393,6 +1410,22 @@ class DataSaver(mp.Process):
 
         print(f"TDOM_Demo save at {os.path.join(self.args.Model_Path_Dir, 'TDOM.mp4')}")
 
+    # 输出时间消耗
+    def SaveTimeCost(self, TimeCost, imagenum):
+        outputfile = open(os.path.join(self.SaveDirRootPath, "TimeCost.txt"), "w")
+        print("########################################################")
+        keys = list(TimeCost.keys())
+        for key in keys:
+            print(f"{key}: {TimeCost[key]}s")
+            outputfile.write(f"{key}: {TimeCost[key]}s\n")
+
+            if key == "ProgressiveTrain":
+                print(f"TimePerImage: {TimeCost[key] / imagenum}s")
+                outputfile.write(f"TimePerImage: {TimeCost[key] / imagenum}s\n")
+
+        outputfile.close()
+        print("########################################################")
+
     # 运行
     def run(self):
         self.MakeDirs()
@@ -1410,6 +1443,9 @@ class DataSaver(mp.Process):
                         self.GetRGBDemo()
                     if self.SaveTDOMNumber > 0:
                         self.GetTDOMDemo()
+                elif Commond_from_GaussianTrainer[0] == "SaveTimeCost":
+                    TimeCost = Commond_from_GaussianTrainer[1]
+                    self.SaveTimeCost(TimeCost, Commond_from_GaussianTrainer[2])
                 elif Commond_from_GaussianTrainer[0] == "stop":
                     break
 

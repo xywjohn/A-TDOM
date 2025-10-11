@@ -670,6 +670,7 @@ class GaussianTrainer(mp.Process):
         # 用于两个进程之间的信息传递
         self.DataPreProccesser_queue = None
         self.GaussianTrainer_queue = None
+        self.DataSaver_queue = None
 
         # 记录模型的已训练次数
         self.AlreadyTrainingIterations = 0
@@ -694,6 +695,8 @@ class GaussianTrainer(mp.Process):
         self.commond = None
 
         self.imagenum = self.args.StartFromImageNo
+
+        self.TDOM_Cam = None
 
     def InitialGaussianTrain(self):
         # 设置初始场景的文件路径
@@ -856,8 +859,7 @@ class GaussianTrainer(mp.Process):
             # 计算损失
             if Training_Type != "On_The_Fly":
                 # 进行影像渲染，渲染指定视点的影像
-                render_pkg = render(viewpoint_cam, self.gaussians, self.args, self.bg,
-                                    Render_Mask=viewpoint_cam.Tri_Mask)
+                render_pkg = render(viewpoint_cam, self.gaussians, self.args, self.bg, Render_Mask=viewpoint_cam.Tri_Mask)
                 (
                     image,
                     viewspace_point_tensor,
@@ -1025,6 +1027,36 @@ class GaussianTrainer(mp.Process):
                 prune_mask = (self.gaussians.get_opacity < self.args.opacity_threshold).squeeze()
                 self.gaussians.prune_points(prune_mask)
                 print(f"Prune Gaussians Num: {prune_mask.sum()}")
+
+        # 如果需要，进行一次影像渲染或者TDOM的生成
+        if Training_Type == "On_The_Fly" and self.args.render_RGB:
+            print("GaussianTrainer: Save RGB Results...")
+            with torch.no_grad():
+                render_pkg = render(self.NewCams[0], self.gaussians, self.args, self.bg, Render_Mask=self.NewCams[0].Tri_Mask)
+                image = render_pkg["render"]
+                self.DataSaver_queue.put(["SaveImage", image])
+        if Training_Type == "On_The_Fly" and self.args.render_TDOM:
+            print("GaussianTrainer: Save TDOM Results...")
+            with torch.no_grad():
+                W, H = 4000, 5000
+
+                if self.TDOM_Cam is None:
+                    T = torch.tensor([10.0379, 58.1547, -0.5450])  # 平移向量，表示相机位置
+                    R = np.array([[0.98391801, 0.17848249, 0.00702562],
+                                  [-0.17858312, 0.98375663, 0.01819236],
+                                  [-0.00366448, -0.01915445, 0.99980982]])
+
+                    FoVx = self.args.TDOM_FoVx
+                    aspect_ratio = 8000 / 10000
+                    FoVy = 2 * math.atan((1 / aspect_ratio) * math.tan(FoVx / 2))
+
+                    # 创建 DummyCamera 实例
+                    self.TDOM_Cam = DummyCamera(R, T, FoVx, FoVy, W, H)
+                    # 创建 DummyPipeline 实例
+                    self.TDOM_pipeline = DummyPipeline()
+
+                TDOM = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background, Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
+                self.DataSaver_queue.put(["SaveTDOM", TDOM])
 
     # 对当前高斯模型进行一次评估
     def Evaluate(self, Training_Type, EvaluateRender):
@@ -1241,15 +1273,152 @@ class GaussianTrainer(mp.Process):
 
                     self.Render_Evaluate_All_Images()
 
+                    # 像后端传递信息
+                    msg = ["GetDemo"]
+                    self.DataSaver_queue.put(msg)
+
                     # 向前端传递信息
                     msg = ["stop"]
                     self.DataPreProccesser_queue.put(msg)
+
+# 后端，第三个线程，主要用于在不影响训练线程的情况下进行一些输出或者保存的工作
+class DataSaver(mp.Process):
+    # 构造函数
+    def __init__(self):
+        super().__init__()
+        self.DataSaver_queue = None
+        self.SaveDirRootPath = None
+        self.Intermediate_RGB_Render_Path = None
+        self.Intermediate_TDOM_Render_Path = None
+        self.SaveImageNumber = 0
+        self.SaveTDOMNumber = 0
+        self.StartFromImageNo = 0
+
+    # 指定保存位置并创建输出文件夹
+    def MakeDirs(self):
+        self.Intermediate_RGB_Render_Path = os.path.join(self.SaveDirRootPath, "Render")
+        self.Intermediate_TDOM_Render_Path = os.path.join(self.SaveDirRootPath, "TDOM")
+        os.makedirs(self.SaveDirRootPath, exist_ok=True)
+        os.makedirs(self.Intermediate_RGB_Render_Path, exist_ok=True)
+        os.makedirs(self.Intermediate_TDOM_Render_Path, exist_ok=True)
+
+    # 保存一张RGB影像
+    def SaveImage(self, image):
+        with torch.no_grad():
+            ImageOutput = (image - image.min()) / (image.max() - image.min())
+            ImageOutput = ImageOutput.permute(1, 2, 0).cpu().numpy()
+            ImageOutput = (ImageOutput * 255).astype(np.uint8)
+            ImageOutput = Image.fromarray(ImageOutput)
+            ImageOutput.save(os.path.join(self.Intermediate_RGB_Render_Path, f"{self.SaveImageNumber}.jpg"))
+            self.SaveImageNumber += 1
+
+    # 保存TDOM
+    def SaveTDOM(self, tdom):
+        with torch.no_grad():
+            rendering_filepath = os.path.join(self.Intermediate_TDOM_Render_Path, f"{self.SaveTDOMNumber}.jpg")
+            torchvision.utils.save_image(tdom, rendering_filepath)
+            self.SaveTDOMNumber += 1
+
+    # 根据RGB影像的保存结果生成Demo
+    def GetRGBDemo(self):
+        # 获取影像的尺寸
+        first_image_path = os.path.join(self.Intermediate_RGB_Render_Path, "0.jpg")
+        frame = cv2.imread(first_image_path)
+        height, width, layers = frame.shape
+
+        # 定义视频编码器和输出格式
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 编码格式，例如'XVID'或'mp4v'
+        fps = 4  # 每秒帧数
+        Demo_PreIMAGE = cv2.VideoWriter(os.path.join(self.SaveDirRootPath, "Render.mp4"), fourcc, fps, (width, height))
+
+        # 将每帧添加到视频中
+        progress_bar = tqdm(range(0, self.SaveImageNumber + self.StartFromImageNo), desc="Get_RGB_Demo", initial=0)
+        for i in range(self.SaveImageNumber + self.StartFromImageNo):
+            text = f"({i + 1}/{self.SaveImageNumber + self.StartFromImageNo})"
+
+            if i <= self.StartFromImageNo - 1:
+                black_frame = np.zeros((height, width, 3), dtype=np.uint8)
+                cv2.putText(black_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                Demo_PreIMAGE.write(black_frame)
+            else:
+                img_path = os.path.join(self.Intermediate_RGB_Render_Path, f"{i - self.StartFromImageNo}.jpg")
+                frame = cv2.imread(img_path)
+                cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                Demo_PreIMAGE.write(frame)
+            progress_bar.update(1)
+
+        # 释放资源
+        Demo_PreIMAGE.release()
+        cv2.destroyAllWindows()
+
+        print(f"RGB_Demo save at {os.path.join(self.SaveDirRootPath, 'Render.mp4')}")
+
+    # 根据TDOM的保存结果生成Demo
+    def GetTDOMDemo(self):
+        # 获取影像的尺寸
+        first_image_path = os.path.join(self.Intermediate_TDOM_Render_Path, "0.jpg")
+        frame = cv2.imread(first_image_path)
+        height, width, layers = frame.shape
+
+        scale = 0.5
+        height = int(height * scale)
+        width = int(width * scale)
+        new_size = (width, height)
+
+        # 定义视频编码器和输出格式
+        fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 编码格式，例如'XVID'或'mp4v'
+        fps = 4  # 每秒帧数
+        Demo_TDOM = cv2.VideoWriter(os.path.join(self.args.Model_Path_Dir, "TDOM.mp4"), fourcc, fps, (width, height))
+
+        # 将每帧添加到视频中
+        progress_bar = tqdm(range(0, self.SaveTDOMNumber + self.StartFromImageNo), desc="Get_TDOM_Demo", initial=0)
+        for i in range(self.SaveTDOMNumber + self.StartFromImageNo):
+            text = f"TDOM: ({i + 1}/{self.SaveTDOMNumber + self.StartFromImageNo})"
+
+            if i <= self.StartFromImageNo - 1:
+                black_frame = np.zeros((height, width, 3), dtype=np.uint8)
+                cv2.putText(black_frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                Demo_TDOM.write(black_frame)
+            else:
+                img_path = os.path.join(self.Intermediate_TDOM_Render_Path, f"{i - self.StartFromImageNo}.jpg")
+                frame = cv2.imread(img_path)
+                frame = cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
+                cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
+                Demo_TDOM.write(frame)
+            progress_bar.update(1)
+
+        # 释放资源
+        Demo_TDOM.release()
+        cv2.destroyAllWindows()
+
+        print(f"TDOM_Demo save at {os.path.join(self.args.Model_Path_Dir, 'TDOM.mp4')}")
+
+    # 运行
+    def run(self):
+        self.MakeDirs()
+        while True:
+            if self.DataSaver_queue.empty():
+                continue
+            else:
+                Commond_from_GaussianTrainer = self.DataSaver_queue.get()
+                if Commond_from_GaussianTrainer[0] == "SaveImage":
+                    self.SaveImage(Commond_from_GaussianTrainer[1])
+                elif Commond_from_GaussianTrainer[0] == "SaveTDOM":
+                    self.SaveTDOM(Commond_from_GaussianTrainer[1])
+                elif Commond_from_GaussianTrainer[0] == "GetDemo":
+                    if self.SaveImageNumber > 0:
+                        self.GetRGBDemo()
+                    if self.SaveTDOMNumber > 0:
+                        self.GetTDOMDemo()
+                elif Commond_from_GaussianTrainer[0] == "stop":
+                    break
 
 # 运行主要函数
 class On_the_Fly_GS:
     def __init__(self):
         self.DataPreProccesser_queue = mp.Queue()
         self.GaussianTrainer_queue = mp.Queue()
+        self.DataSaver_queue = mp.Queue()
 
         self.DataPreProccesser = DataPreProccesser()
         self.DataPreProccesser.DataPreProccesser_queue = self.DataPreProccesser_queue
@@ -1258,18 +1427,28 @@ class On_the_Fly_GS:
         self.GaussianTrainer = GaussianTrainer()
         self.GaussianTrainer.DataPreProccesser_queue = self.DataPreProccesser_queue
         self.GaussianTrainer.GaussianTrainer_queue = self.GaussianTrainer_queue
+        self.GaussianTrainer.DataSaver_queue = self.DataSaver_queue
         self.GaussianTrainer.ImagesAlreadyBeTrainedIterations = self.DataPreProccesser.ImagesAlreadyBeTrainedIterations
         self.GaussianTrainer.source_path_list = self.DataPreProccesser.source_path_list
         self.GaussianTrainer.model_path_list = self.DataPreProccesser.model_path_list
 
+        self.DataSaver = DataSaver()
+        self.DataSaver.DataSaver_queue = self.DataSaver_queue
+        self.DataSaver.SaveDirRootPath = os.path.join(self.GaussianTrainer.args.Model_Path_Dir, "Intermediate_Results")
+        self.DataSaver.StartFromImageNo = self.GaussianTrainer.args.StartFromImageNo
+
         print("Start Thread...\n")
         self.GaussianTrainer_Thread = mp.Process(target=self.GaussianTrainer.run)
         self.GaussianTrainer_Thread.start()
+        self.DataSaver_Thread = mp.Process(target=self.DataSaver.run)
+        self.DataSaver_Thread.start()
         self.DataPreProccesser.run()
 
         self.GaussianTrainer_queue.put(["stop"])
         self.GaussianTrainer_Thread.join()
-        print("\nStart Thread...")
+        self.DataSaver_queue.put(["stop"])
+        self.DataSaver_Thread.join()
+        print("\nAll Done!!!")
 
 if __name__ == "__main__":
     mp.set_start_method("spawn")

@@ -28,6 +28,8 @@ conda activate ATDOM
 pip install pytorch3d
 pip install open3d
 pip install opencv-python
+pip install scikit-image
+pip install lpips
 ```
 
 ## Data Preparation
@@ -156,6 +158,7 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
       url={https://arxiv.org/abs/2509.12759}, 
 }
 ```
+
 
 
 

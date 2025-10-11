@@ -97,6 +97,7 @@ class PipelineParams(ParamGroup):
         self.ProgressiveModelOutput = False
         self.GetDemo = False
         self.Block = False
+        self.render_RGB = False
         self.render_target = False
         self.Small_Scale_Scene = False
         self.Use_Tri_Mask = False

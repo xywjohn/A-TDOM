@@ -1164,6 +1164,7 @@ class GaussianTrainer(mp.Process):
 
         if self.Finish:
             lpips_vgg = lpips.LPIPS(net='vgg').eval().to("cuda")
+            progress_bar = tqdm(range(0, self.imagenum), desc=f"Final Evaluate...", initial=0)
 
         if self.EvaluateDiary is None:
             self.EvaluateDiary = open(os.path.join(self.args.Model_Path_Dir, "Intermediate_Results", "eval.txt"), "w")
@@ -1209,8 +1210,13 @@ class GaussianTrainer(mp.Process):
 
                             ssim_test += ssim(np_gt_image, np_image, channel_axis=-1, data_range=1, win_size=win_size)
 
+                            progress_bar.update(1)
+
                     else:
                         ErrorImageNum = ErrorImageNum + 1
+
+                if self.Finish:
+                    progress_bar.close()
 
                 psnr_test /= len(config['cameras']) - ErrorImageNum
                 ssim_test /= len(config['cameras']) - ErrorImageNum
@@ -1303,6 +1309,15 @@ class GaussianTrainer(mp.Process):
 
                 PSNR_File.write(str(self.AlreadyTrainingIterations) + f": {PSNR}, Visible_Gaussians_Num: {visibility_filter.shape[0]}\n")
                 PSNR_File.close()
+
+    # 保存当前模型
+    def GS_Save(self, UseSecondPath=True):
+        imagedirname = self.imagenum if not UseSecondPath else self.imagenum + 1
+        print("\n[Save At Image {}] Saving Checkpoint".format(imagedirname))
+        torch.save((self.gaussians.capture(), self.AlreadyTrainingIterations), os.path.join(self.args.Model_Path_Dir, str(imagedirname), f"chkpnt{imagedirname}.pth"))
+
+        print("\n[Save At Image {}] Saving Gaussians".format(imagedirname))
+        self.scene.save(imagedirname)
 
     # 该函数将被送入到一个线程中，用于渐进式训练中的数据读取以及预处理
     def run(self):
@@ -1408,13 +1423,14 @@ class GaussianTrainer(mp.Process):
                     self.scene.model_path = Commond_from_DataPreProccesser[1]
                     if not self.args.skip_GlobalOptimization:
                         self.Train_Gaussians(self.args.FinalOptimizationIterations, "Final_Refinement")
-                        self.EvaluateDiary.close()
 
                     time2 = time.time()
                     self.TimeCost["FinalRefinement"] += time2 - time1
 
                     self.Finish = True
-                    self.Evaluate("FinalRefinement", True)
+                    with torch.no_grad():
+                        self.GS_Save(True)
+                        self.Evaluate("Final_Refinement", True)
 
                     self.Render_Evaluate_All_Images()
 
@@ -1428,6 +1444,8 @@ class GaussianTrainer(mp.Process):
                     # 向前端传递信息
                     msg = ["stop"]
                     self.DataPreProccesser_queue.put(msg)
+
+                    self.EvaluateDiary.close()
 
 # 后端，第三个线程，主要用于在不影响训练线程的情况下进行一些输出或者保存的工作
 class DataSaver(mp.Process):
@@ -1551,9 +1569,8 @@ class DataSaver(mp.Process):
             outputfile.write(f"{key}: {TimeCost[key]}s\n")
 
             if key == "ProgressiveTrain":
-                print(f"TimePerImage: {TimeCost[key] / imagenum}s")
+                print(f"TimePerImage: {TimeCost[key] / imagenum }s")
                 outputfile.write(f"TimePerImage: {TimeCost[key] / imagenum}s\n")
-
         outputfile.close()
         print("########################################################")
 

@@ -136,8 +136,9 @@ def TrainingPreparation(args):
     # 读取所有的source_path
     IM = []
     for name in os.listdir(args.Source_Path_Dir):
-        if os.path.isdir(os.path.join(args.Source_Path_Dir, name)) and int(name) >= args.StartFromImageNo:
-            IM.append(int(name))
+        if name != "images":
+            if os.path.isdir(os.path.join(args.Source_Path_Dir, name)) and int(name) >= args.StartFromImageNo and (int(name) <= args.EndAtImageNo or args.EndAtImageNo <= args.StartFromImageNo):
+                IM.append(int(name))
 
     # IM = [int(name) for name in os.listdir(args.Source_Path_Dir) if os.path.isdir(os.path.join(args.Source_Path_Dir, name))]
     IM = sorted(IM)
@@ -387,7 +388,7 @@ class DataPreProccesser(mp.Process):
     def ExpandingGS_From_SparsePCD2(self, TrainCameras, get_ply=False):
         if os.path.exists(os.path.join(self.args.source_path_second, "sparse")):
             CurrentImagesNames = list(TrainCameras.keys())
-            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids, xys, tri = sceneLoadTypeCallbacks[
+            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list = sceneLoadTypeCallbacks[
                 "Single_Image1"](
                 self.args.source_path_second,
                 self.args.images, self.args.eval,
@@ -395,7 +396,8 @@ class DataPreProccesser(mp.Process):
                 Image_Name="",
                 CurrentImagesNames=CurrentImagesNames,
                 Diary=self.Diary,
-                Silence=self.Silence)
+                Silence=self.Silence,
+                No_Key_Region=self.args.No_Key)
         else:
             assert False, "Could not recognize scene type!"
 
@@ -437,7 +439,7 @@ class DataPreProccesser(mp.Process):
 
         scene_info = sceneLoadTypeCallbacks["Single_Image2"](self.args.source_path_second,
                                                              train_cam_infos, test_cam_infos, nerf_normalization,
-                                                             point3D_ids, xys, tri, NewCams,
+                                                             point3D_ids_list, xys_list, tri_list, NewCams,
                                                              self.args.OriginImageHeight, self.args.OriginImageWidth,
                                                              get_ply=get_ply,
                                                              points_per_triangle=self.args.points_per_triangle,
@@ -606,6 +608,9 @@ class DataPreProccesser(mp.Process):
 
                 if self.args.Block or self.ChosenImageNames != []:
                     self.ChosenImageNames.append(NewCam.image_name)
+
+            msg = ["RenderNewDone"]
+            self.GaussianTrainer_queue.put(msg)
 
             # self.scene.scene_info_traincam = train_cam_infos
             New_scene_info_traincam = train_cam_infos
@@ -791,7 +796,7 @@ class GaussianTrainer(mp.Process):
         self.gaussians = GaussianModel(self.args.sh_degree)
 
         # 初始化一个场景
-        self.scene = Scene(self.args, self.gaussians, load_iteration=None, shuffle=True, resolution_scales=[1.0], Do_Get_Tri_Mask=self.args.Use_Tri_Mask)
+        self.scene = Scene(self.args, self.gaussians, load_iteration=None, shuffle=True, resolution_scales=[1.0], Do_Get_Tri_Mask=self.args.Use_Tri_Mask, No_Key_Region=self.args.No_Key)
 
         # 为当前已经读入的影像全部创建一个梯度图
         self.GetGradLogForCams()
@@ -877,8 +882,6 @@ class GaussianTrainer(mp.Process):
                         msg = [image]
                         self.DataPreProccesser_queue.put(msg)
 
-                        self.RenderNewDone = True
-
                         self.commond = None
                 elif self.commond[0] == "Render_New" and sub_iteration <= iteration / 2:
                     pass
@@ -886,6 +889,9 @@ class GaussianTrainer(mp.Process):
                     pass
                 elif self.commond[0] == "Final_Refinement":
                     pass
+                elif self.commond[0] == "RenderNewDone":
+                    self.RenderNewDone = True
+                    self.commond = None
                 else:
                     print(self.commond)
                     self.commond = None
@@ -897,7 +903,7 @@ class GaussianTrainer(mp.Process):
 
             # 当摄影机视点栈堆为空时：
             if not viewpoint_stack:
-                if Training_Type != "On_The_Fly":
+                if Training_Type != "On_The_Fly" or self.args.No_Adaptive:
                     # 将Scene类中所有的self.train_cameras中指定缩放比例的训练影像及其相关信息存入到摄影机视点栈堆中
                     viewpoint_stack = self.scene.getTrainCameras().copy()
 
@@ -920,7 +926,7 @@ class GaussianTrainer(mp.Process):
                 continue
 
             # 学习率下降
-            if Training_Type == "Initialization":
+            if Training_Type == "Initialization" or self.args.No_Adaptive:
                 lr = self.gaussians.update_learning_rate(self.AlreadyTrainingIterations)
             else:
                 lr = self.gaussians.SingleImage_Update_Lr(self.ImagesAlreadyBeTrainedIterations,
@@ -1026,7 +1032,6 @@ class GaussianTrainer(mp.Process):
                 # 计算log损失累计
                 self.ema_loss_for_log = 0.4 * loss.item() + 0.6 * self.ema_loss_for_log
 
-                # 每十次训练更新一次进度条
                 progress_bar.update(1)
                 progress_bar.set_postfix({"Loss": f"{self.ema_loss_for_log:.{7}f}"})
                 if sub_iteration == iteration:
@@ -1036,6 +1041,7 @@ class GaussianTrainer(mp.Process):
                 GaussianPruned = False
 
                 # 判断是否需要重新设置可见度（注意，此时在渐进式训练过程中暂时不进行该步骤）
+                # 如果使用了No_Sampling，则也可以使用该步骤
                 if self.AlreadyTrainingIterations % self.args.opacity_reset_interval == 0:
                     '''
                     if (Training_Type == "Initialization") or (
@@ -1043,11 +1049,11 @@ class GaussianTrainer(mp.Process):
                             self.args.FinalOptimizationIterations - (
                                     self.AlreadyTrainingIterations - Start_From_Its) > self.args.opacity_reset_interval and
                             self.AlreadyTrainingIterations <= Start_From_Its + iteration / 2):'''
-                    if (Training_Type == "Initialization"):
+                    if (Training_Type == "Initialization" or self.args.No_Sampling):
                         self.ResetOpacityTime += 1
 
                 # 如果处于模型初始化训练阶段
-                if Training_Type == "Initialization" and self.AlreadyTrainingIterations < self.args.densify_until_iter:
+                if (Training_Type == "Initialization" and self.AlreadyTrainingIterations < self.args.densify_until_iter) or self.args.No_Sampling:
                     self.gaussians.max_radii2D[visibility_filter] = torch.max(
                         self.gaussians.max_radii2D[visibility_filter], radii[visibility_filter])
                     self.gaussians.add_densification_stats(viewspace_point_tensor, visibility_filter)
@@ -1100,7 +1106,7 @@ class GaussianTrainer(mp.Process):
             sub_iteration = sub_iteration + 1
 
         # 在完成这一张影像的训练之后
-        if Training_Type == "On_The_Fly":
+        if Training_Type == "On_The_Fly" and not self.args.No_Sampling:
             with torch.no_grad():
                 # 进行一次高斯球剔除
                 prune_mask = (self.gaussians.get_opacity < self.args.opacity_threshold).squeeze()
@@ -1111,11 +1117,13 @@ class GaussianTrainer(mp.Process):
         if Training_Type == "On_The_Fly" and self.args.render_RGB:
             print("GaussianTrainer: Save RGB Results...")
             with torch.no_grad():
-                render_pkg = render(self.NewCams[0], self.gaussians, self.args, self.bg, Render_Mask=self.NewCams[0].Tri_Mask)
-                image = render_pkg["render"]
-                self.DataSaver_queue.put(["SaveImage", image])
+                for i in range(len(self.NewCams)):
+                    render_pkg = render(self.NewCams[i], self.gaussians, self.args, self.bg, Render_Mask=self.NewCams[0].Tri_Mask)
+                    image = render_pkg["render"]
+                    self.DataSaver_queue.put(["SaveImage", image])
         if Training_Type == "On_The_Fly" and self.args.render_TDOM:
             print("GaussianTrainer: Save TDOM Results...")
+            time1 = time.time()
             with torch.no_grad():
                 W, H = 4000, 5000
 
@@ -1135,6 +1143,9 @@ class GaussianTrainer(mp.Process):
                     self.TDOM_pipeline = DummyPipeline()
 
                 TDOM = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background, Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
+
+                time2 = time.time()
+                print(f"Time cost of TDOM rendering: {time2 - time1}s")
                 self.DataSaver_queue.put(["SaveTDOM", TDOM])
 
     # 对当前高斯模型进行一次评估
@@ -1155,82 +1166,82 @@ class GaussianTrainer(mp.Process):
             DoEvaluate = False
 
         if DoEvaluate:
-            self.EvaluateModel(l1_loss, render, (self.pp.extract(self.args), self.background))
+            self.EvaluateModel(l1_loss, render, (self.pp.extract(self.args), self.background), DoEvaluate)
 
     # 打印模型的评价结果
-    def EvaluateModel(self, l1_loss, renderFunc, renderArgs):
+    def EvaluateModel(self, l1_loss, renderFunc, renderArgs, DoEvaluate):
         # Report test and samples of training set
         torch.cuda.empty_cache()
+        if DoEvaluate:
+            if self.Finish:
+                lpips_vgg = lpips.LPIPS(net='vgg').eval().to("cuda")
+                progress_bar = tqdm(range(0, self.imagenum), desc=f"Final Evaluate...", initial=0)
 
-        if self.Finish:
-            lpips_vgg = lpips.LPIPS(net='vgg').eval().to("cuda")
-            progress_bar = tqdm(range(0, self.imagenum), desc=f"Final Evaluate...", initial=0)
+            if self.EvaluateDiary is None:
+                self.EvaluateDiary = open(os.path.join(self.args.Model_Path_Dir, "Intermediate_Results", "eval.txt"), "w")
 
-        if self.EvaluateDiary is None:
-            self.EvaluateDiary = open(os.path.join(self.args.Model_Path_Dir, "Intermediate_Results", "eval.txt"), "w")
+            if self.ChosenImageNames == []:
+                validation_configs = ({'name': 'test', 'cameras': self.scene.getTestCameras()},
+                                      {'name': 'train', 'cameras': self.scene.getTrainCameras()})
+            else:
+                validation_configs = ({'name': 'test', 'cameras': self.scene.getTestCameras()},
+                                      {'name': 'train', 'cameras': [traincam for traincam in self.scene.getTrainCameras() if
+                                                                    traincam.image_name in self.ChosenImageNames]})
 
-        if self.ChosenImageNames == []:
-            validation_configs = ({'name': 'test', 'cameras': self.scene.getTestCameras()},
-                                  {'name': 'train', 'cameras': self.scene.getTrainCameras()})
-        else:
-            validation_configs = ({'name': 'test', 'cameras': self.scene.getTestCameras()},
-                                  {'name': 'train', 'cameras': [traincam for traincam in self.scene.getTrainCameras() if
-                                                                traincam.image_name in self.ChosenImageNames]})
+            for config in validation_configs:
+                if config['cameras'] and len(config['cameras']) > 0:
+                    l1_test = 0.0
+                    psnr_test = 0.0
+                    lpips_test = 0.0
+                    ssim_test = 0.0
 
-        for config in validation_configs:
-            if config['cameras'] and len(config['cameras']) > 0:
-                l1_test = 0.0
-                psnr_test = 0.0
-                lpips_test = 0.0
-                ssim_test = 0.0
+                    PSNRs = []
+                    ErrorImageNum = 0
+                    for idx, viewpoint in enumerate(config['cameras']):
+                        if viewpoint.Tri_Mask.shape[0] != 2:
+                            image = torch.clamp(
+                                renderFunc(viewpoint, self.gaussians, *renderArgs, Render_Mask=viewpoint.Tri_Mask)[
+                                    "render"], 0.0, 1.0)
+                            gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
+                            l1_test += l1_loss(image, gt_image).mean().double()
 
-                PSNRs = []
-                ErrorImageNum = 0
-                for idx, viewpoint in enumerate(config['cameras']):
-                    if viewpoint.Tri_Mask.shape[0] != 2:
-                        image = torch.clamp(
-                            renderFunc(viewpoint, self.gaussians, *renderArgs, Render_Mask=viewpoint.Tri_Mask)[
-                                "render"], 0.0, 1.0)
-                        gt_image = torch.clamp(viewpoint.original_image.to("cuda"), 0.0, 1.0)
-                        l1_test += l1_loss(image, gt_image).mean().double()
+                            PSNR = psnr(image, gt_image, viewpoint.Tri_Mask).mean().double()
+                            psnr_test += PSNR
+                            PSNRs.append(PSNR)
 
-                        PSNR = psnr(image, gt_image, viewpoint.Tri_Mask).mean().double()
-                        psnr_test += PSNR
-                        PSNRs.append(PSNR)
+                            if self.Finish:
+                                lpips_test += Get_lpips(image, gt_image, lpips_vgg)['vgg']
 
-                        if self.Finish:
-                            lpips_test += Get_lpips(image, gt_image, lpips_vgg)['vgg']
+                                # 自动选择合适的 win_size，避免小图像报错
+                                np_image = image.detach().cpu().numpy().astype(np.float32)
+                                np_gt_image = gt_image.detach().cpu().numpy().astype(np.float32)
 
-                            # 自动选择合适的 win_size，避免小图像报错
-                            np_image = image.detach().cpu().numpy().astype(np.float32)
-                            np_gt_image = gt_image.detach().cpu().numpy().astype(np.float32)
+                                min_dim = min(np_image.shape[:2])
+                                win_size = min(7, min_dim) if min_dim >= 7 else min_dim
 
-                            min_dim = min(np_image.shape[:2])
-                            win_size = min(7, min_dim) if min_dim >= 7 else min_dim
+                                ssim_test += ssim(np_gt_image, np_image, channel_axis=-1, data_range=1, win_size=win_size)
 
-                            ssim_test += ssim(np_gt_image, np_image, channel_axis=-1, data_range=1, win_size=win_size)
+                                progress_bar.update(1)
 
-                            progress_bar.update(1)
+                        else:
+                            ErrorImageNum = ErrorImageNum + 1
 
-                    else:
-                        ErrorImageNum = ErrorImageNum + 1
+                    if self.Finish:
+                        progress_bar.close()
 
-                if self.Finish:
-                    progress_bar.close()
+                    psnr_test /= len(config['cameras']) - ErrorImageNum
+                    ssim_test /= len(config['cameras']) - ErrorImageNum
+                    lpips_test /= len(config['cameras']) - ErrorImageNum
+                    l1_test /= len(config['cameras']) - ErrorImageNum
+                    print("\n[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {} SSIM {} LPIPS {}".format(self.AlreadyTrainingIterations,
+                                                                                         config['name'], l1_test,
+                                                                                         self.gaussians.get_xyz.shape[0],
+                                                                                         psnr_test, ssim_test, lpips_test))
 
-                psnr_test /= len(config['cameras']) - ErrorImageNum
-                ssim_test /= len(config['cameras']) - ErrorImageNum
-                lpips_test /= len(config['cameras']) - ErrorImageNum
-                l1_test /= len(config['cameras']) - ErrorImageNum
-                print("\n[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {} SSIM {} LPIPS {}".format(self.AlreadyTrainingIterations,
-                                                                                     config['name'], l1_test,
-                                                                                     self.gaussians.get_xyz.shape[0],
-                                                                                     psnr_test, ssim_test, lpips_test))
-
-                self.EvaluateDiary.write("[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {} SSIM {} LPIPS {}\n".format(self.AlreadyTrainingIterations,
-                                                                                     config['name'], l1_test,
-                                                                                     self.gaussians.get_xyz.shape[0],
-                                                                                     psnr_test, ssim_test, lpips_test))
+                    self.EvaluateDiary.write("[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {} SSIM {} LPIPS {}\n".format(self.AlreadyTrainingIterations,
+                                                                                         config['name'], l1_test,
+                                                                                         self.gaussians.get_xyz.shape[0],
+                                                                                         psnr_test, ssim_test, lpips_test))
 
                 # self.Diary.write(
                 #     "[ITER {}] Evaluating {}: L1 {} Gaussians {} PSNR {}\n".format(self.AlreadyTrainingIterations,
@@ -1243,6 +1254,12 @@ class GaussianTrainer(mp.Process):
                 #     self.EvaluateDiary.write(f"Iterations: {self.AlreadyTrainingIterations}\n")
                 #     for i in range(len(PSNRs)):
                 #         self.EvaluateDiary.write(f"{config['cameras'][i].image_name}: {PSNRs[i]}\n")
+        else:
+            print("\n[ITER {}] L1 {} Gaussians {} PSNR {} SSIM {} LPIPS {}".format(
+                0.0,
+                0.0,
+                self.gaussians.get_xyz.shape[0],
+                0.0, 0.0, 0.0))
 
     # 仅训练当前新传入的影像
     def GetTraining_Viewpoints_SingleImage(self, single=False):
@@ -1252,11 +1269,12 @@ class GaussianTrainer(mp.Process):
                 viewpoint_stack.append(self.NewCams[0])
         else:
             for i in range(self.args.IterationPerMergeScene):
-                viewpoint_stack.append(self.NewCams[0])
+                for j in range(len(self.NewCams)):
+                    viewpoint_stack.append(self.NewCams[j])
 
             ALL_viewpoint_stack = self.scene.getTrainCameras().copy()
             ImageIndex = [j for j in range(len(ALL_viewpoint_stack))]
-            RestImageNeed = self.args.GlobalOptimizationIteration
+            RestImageNeed = self.args.GlobalOptimizationIteration * len(self.NewCams)
             while RestImageNeed > 0:
                 if len(ImageIndex) > RestImageNeed:
                     SampleIndex = random.sample(ImageIndex, RestImageNeed)
@@ -1339,50 +1357,55 @@ class GaussianTrainer(mp.Process):
                         # 向前端传递信息
                         msg = [image]
                         self.DataPreProccesser_queue.put(msg)
-                        self.RenderNewDone = True
                 elif Commond_from_DataPreProccesser[0] == "Progressive_Train":
-                    time1 = time.time()
-                    self.imagenum += 1
-                    print(f"-----------------------------This is {self.imagenum} image-----------------------------")
-                    print("GaussianTrainer: Get Information from DataPreProccesser...")
+                    with torch.no_grad():
+                        time1 = time.time()
+                        print("GaussianTrainer: Get Information from DataPreProccesser...")
 
-                    self.scene.scene_info_traincam = Commond_from_DataPreProccesser[1]
-                    self.NewCams = Commond_from_DataPreProccesser[2]
-                    UpdatedTrainCamsPosList = Commond_from_DataPreProccesser[3]
-                    self.scene.cameras_extent = Commond_from_DataPreProccesser[6]
-                    self.gaussians.expand_from_pcd(Commond_from_DataPreProccesser[4], self.scene.cameras_extent)
-                    self.scene.basic_pcd = Commond_from_DataPreProccesser[4]
-                    self.scene.model_path = Commond_from_DataPreProccesser[5]
-                    NewImagesNum = Commond_from_DataPreProccesser[7]
+                        self.scene.scene_info_traincam = Commond_from_DataPreProccesser[1]
+                        self.NewCams = Commond_from_DataPreProccesser[2]
+                        UpdatedTrainCamsPosList = Commond_from_DataPreProccesser[3]
+                        self.scene.cameras_extent = Commond_from_DataPreProccesser[6]
+                        if not self.args.No_Sampling:
+                            self.gaussians.expand_from_pcd(Commond_from_DataPreProccesser[4], self.scene.cameras_extent)
+                        self.scene.basic_pcd = Commond_from_DataPreProccesser[4]
+                        self.scene.model_path = Commond_from_DataPreProccesser[5]
+                        NewImagesNum = Commond_from_DataPreProccesser[7]
 
-                    # 还原为 dict
-                    worlds = UpdatedTrainCamsPosList[0]
-                    projs = UpdatedTrainCamsPosList[1]
-                    fulls = UpdatedTrainCamsPosList[2]
-                    centers = UpdatedTrainCamsPosList[3]
-                    names = UpdatedTrainCamsPosList[4]
-                    UpdatedTrainCamsPos = {}
-                    for i, name in enumerate(names):
-                        UpdatedTrainCamsPos[name] = [
-                            worlds[i],
-                            projs[i],
-                            fulls[i],
-                            centers[i]
-                        ]
+                        self.imagenum += len(self.NewCams)
+                        print(f"-----------------------------This is {self.imagenum} image-----------------------------")
 
-                    # 更新位姿
-                    for i in range(len(self.scene.train_cameras[1.0])):
-                        image_name = self.scene.train_cameras[1.0][i].image_name
-                        self.scene.train_cameras[1.0][i].world_view_transform = UpdatedTrainCamsPos[image_name][0].cuda()
-                        self.scene.train_cameras[1.0][i].projection_matrix = UpdatedTrainCamsPos[image_name][1].cuda()
-                        self.scene.train_cameras[1.0][i].full_proj_transform = UpdatedTrainCamsPos[image_name][2].cuda()
-                        self.scene.train_cameras[1.0][i].camera_center = UpdatedTrainCamsPos[image_name][3].cuda()
-                    self.scene.train_cameras[1.0].append(Commond_from_DataPreProccesser[2][0])
+                        # 还原为 dict
+                        worlds = UpdatedTrainCamsPosList[0]
+                        projs = UpdatedTrainCamsPosList[1]
+                        fulls = UpdatedTrainCamsPosList[2]
+                        centers = UpdatedTrainCamsPosList[3]
+                        names = UpdatedTrainCamsPosList[4]
+                        UpdatedTrainCamsPos = {}
+                        for i, name in enumerate(names):
+                            UpdatedTrainCamsPos[name] = [
+                                worlds[i],
+                                projs[i],
+                                fulls[i],
+                                centers[i]
+                            ]
 
-                    self.ImagesAlreadyBeTrainedIterations_Set()
+                        # 更新位姿
+                        for i in range(len(self.scene.train_cameras[1.0])):
+                            image_name = self.scene.train_cameras[1.0][i].image_name
+                            self.scene.train_cameras[1.0][i].world_view_transform = UpdatedTrainCamsPos[image_name][0].cuda()
+                            self.scene.train_cameras[1.0][i].projection_matrix = UpdatedTrainCamsPos[image_name][1].cuda()
+                            self.scene.train_cameras[1.0][i].full_proj_transform = UpdatedTrainCamsPos[image_name][2].cuda()
+                            self.scene.train_cameras[1.0][i].camera_center = UpdatedTrainCamsPos[image_name][3].cuda()
 
-                    # 向前端传递信息，表示开始读取后续的影像
-                    self.SendImagePos_to_DataPreProccesser()
+                        # 将新的影像加入
+                        for i in range(len(self.NewCams)):
+                            self.scene.train_cameras[1.0].append(Commond_from_DataPreProccesser[2][i])
+
+                        self.ImagesAlreadyBeTrainedIterations_Set()
+
+                        # 向前端传递信息，表示开始读取后续的影像
+                        self.SendImagePos_to_DataPreProccesser()
 
                     # 对扩张后的场景进行训练
                     if not self.args.skip_MergeSceneTraining:
@@ -1406,10 +1429,8 @@ class GaussianTrainer(mp.Process):
                                     msg = [image]
                                     self.DataPreProccesser_queue.put(msg)
 
-                                    self.RenderNewDone = True
-
                                     self.commond = None
-                            elif self.commond[0] == "Final_Refinement_Prepare":
+                            elif self.commond[0] == "Final_Refinement_Prepare" or self.commond[0] == "RenderNewDone":
                                 self.RenderNewDone = True
                                 self.commond = None
 
@@ -1428,18 +1449,19 @@ class GaussianTrainer(mp.Process):
                     self.TimeCost["FinalRefinement"] += time2 - time1
 
                     self.Finish = True
-                    with torch.no_grad():
-                        self.GS_Save(True)
-                        self.Evaluate("Final_Refinement", True)
-
-                    self.Render_Evaluate_All_Images()
 
                     msg = ["SaveTimeCost", self.TimeCost, self.imagenum]
                     self.DataSaver_queue.put(msg)
 
+                    with torch.no_grad():
+                        self.GS_Save(True)
+                        self.Evaluate("Final_Refinement", True)
+
                     # 像后端传递信息
                     msg = ["GetDemo"]
                     self.DataSaver_queue.put(msg)
+
+                    self.Render_Evaluate_All_Images()
 
                     # 向前端传递信息
                     msg = ["stop"]

@@ -18,13 +18,13 @@ def resize_image_pil(image_path, new_width=1600):
     else:
         return img, False
 
-DatasetName = ["North"]
+DatasetName = ["Caffe2"]
 SourceImageDataset = r"/data2/xyw/Dataset/3DGS_Data/COLMAP"
 On_The_Fly_Dataset = r"/data2/xyw/Dataset/3DGS_Data/On_the_Fly_SfM"
 
 for dataset in DatasetName:
     SourceImagesDir = os.path.join(SourceImageDataset, r"{}/images".format(dataset))
-    jpg_files = glob.glob(os.path.join(SourceImagesDir, "*.JPG"))
+    jpg_files = glob.glob(os.path.join(SourceImagesDir, "*.jpg"))
     endimage = jpg_files[0].split(".")[-1]
     IsResize = False
 

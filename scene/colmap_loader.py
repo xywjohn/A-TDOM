@@ -191,7 +191,7 @@ def read_points3D_ID_binary(path_to_model_file):
             errors[p_id] = error
 
     time2 = time.time()
-    print(f"read_points3D_ID_binary: {time2 - time1}s")
+    # print(f"read_points3D_ID_binary: {time2 - time1}s")
 
     return POINT3D_IDs.astype(int), xyzs, rgbs, errors
 

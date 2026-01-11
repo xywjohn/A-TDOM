@@ -631,6 +631,8 @@ class GaussianModel:
             None
         )
 
+        torch.cuda.empty_cache()
+
     def training_setup(self, training_args):
         self.percent_dense = training_args.percent_dense
         self.xyz_gradient_accum = torch.zeros((self.get_xyz.shape[0], 1), device="cuda")

@@ -438,7 +438,7 @@ def Get_3D_From_2D_3(point3D_ids: np.array, sampled_point3D_ids: np.array, POINT
 
     return corresponding_3d_points, corresponding_3d_points_rgb, sampled_corresponding_3d_points, sampled_corresponding_3d_points_rgb
 
-def Get_Tri_Mask(extr, width, height, Get3D_ID=False, device='cuda', Silence=False):
+def Get_Tri_Mask(extr, width, height, Get3D_ID=False, device='cuda', Silence=False, No_Key_Region=False):
     time1 = time.time()
 
     '''
@@ -494,12 +494,15 @@ def Get_Tri_Mask(extr, width, height, Get3D_ID=False, device='cuda', Silence=Fal
     # 构建 Delaunay 三角剖分
     tri = Delaunay(xys)
 
-    mask = np.zeros((height, width), dtype=np.uint8)
+    if not No_Key_Region:
+        mask = np.zeros((height, width), dtype=np.uint8)
 
-    # 绘制每个三角形
-    for simplex in tri.simplices:
-        pts = xys[simplex].astype(np.int32)
-        cv2.fillConvexPoly(mask, pts, 255)
+        # 绘制每个三角形
+        for simplex in tri.simplices:
+            pts = xys[simplex].astype(np.int32)
+            cv2.fillConvexPoly(mask, pts, 255)
+    else:
+        mask = np.ones((height, width), dtype=np.uint8)
 
     # 转为 PyTorch tensor 并降采样
     mask = torch.from_numpy(mask).float().unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
@@ -555,7 +558,7 @@ def PointsFilter(sampled_points, mask, H_orig, W_orig, H_down, W_down, Tri_IDs=[
     else:
         return selected_points, point3D_ids
 
-def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, Do_Get_Tri_Mask=False):
+def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, Do_Get_Tri_Mask=False, No_Key_Region=False):
     cam_infos = []
     for idx, key in enumerate(cam_extrinsics):
         extr = cam_extrinsics[key]
@@ -611,7 +614,7 @@ def readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, Do_Get_Tri_
 
         Tri_Mask = None
         if Do_Get_Tri_Mask:
-            Tri_Mask = Get_Tri_Mask(extr, width, height)
+            Tri_Mask = Get_Tri_Mask(extr, width, height, No_Key_Region=No_Key_Region)
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                               image_path=image_path, image_name=image_name, width=width, height=height, Tri_Mask=Tri_Mask)
@@ -688,8 +691,11 @@ def On_the_Fly_readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, 
     sys.stdout.write('\n')
     return cam_infos
 
-def SingleImage_readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, Do_Get_Tri_Mask=False, Image_Name="", CurrentImagesNames=[], Silence=False):
+def SingleImage_readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder, Do_Get_Tri_Mask=False, Image_Name="", CurrentImagesNames=[], Silence=False, No_Key_Region=False):
     cam_infos = []
+    point3D_ids_list = {}
+    xys_list = {}
+    tri_list = {}
     for idx, key in enumerate(cam_extrinsics):
         if not Silence:
             sys.stdout.write('\r')
@@ -747,7 +753,10 @@ def SingleImage_readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder,
             # print(image_path)
 
             if Do_Get_Tri_Mask:
-                Tri_Mask, point3D_ids, xys, tri = Get_Tri_Mask(extr, width, height, True, Silence=Silence)
+                Tri_Mask, point3D_ids, xys, tri = Get_Tri_Mask(extr, width, height, True, Silence=Silence, No_Key_Region=No_Key_Region)
+                point3D_ids_list[image_name] = point3D_ids
+                xys_list[image_name] = xys
+                tri_list[image_name] = tri
             else:
                 Tri_Mask = None
         else:
@@ -761,7 +770,8 @@ def SingleImage_readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder,
 
     sys.stdout.write('\n')
 
-    return cam_infos, point3D_ids, xys, tri
+    # return cam_infos, point3D_ids, xys, tri
+    return cam_infos, point3D_ids_list, xys_list, tri_list
 
 def fetchPly(path):
     plydata = PlyData.read(path)
@@ -851,7 +861,7 @@ def On_the_Fly_readColmapSceneInfo(path, images, eval, CurrentImagesNames, llffh
                            ply_path=ply_path)
     return scene_info
 
-def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_Name="", CurrentImagesNames=[], Do_Get_Tri_Mask=False, Diary=None, Silence=False):
+def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_Name="", CurrentImagesNames=[], Do_Get_Tri_Mask=False, Diary=None, Silence=False, No_Key_Region=False):
     time1 = time.time()
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
@@ -871,13 +881,17 @@ def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_
 
     time1 = time.time()
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted, point3D_ids, xys, tri = SingleImage_readColmapCameras(cam_extrinsics=cam_extrinsics,
+    image_folder_path = os.path.join(os.path.dirname(path), reading_dir)
+    if not os.path.exists(image_folder_path):
+        image_folder_path = os.path.join(path, reading_dir)
+    cam_infos_unsorted, point3D_ids_list, xys_list, tri_list = SingleImage_readColmapCameras(cam_extrinsics=cam_extrinsics,
                                                                               cam_intrinsics=cam_intrinsics,
-                                                                              images_folder=os.path.join(path, reading_dir),
+                                                                              images_folder=image_folder_path,
                                                                               Image_Name=Image_Name,
                                                                               Do_Get_Tri_Mask=Do_Get_Tri_Mask,
                                                                               CurrentImagesNames=CurrentImagesNames,
-                                                                              Silence=Silence)
+                                                                              Silence=Silence,
+                                                                              No_Key_Region=No_Key_Region)
 
     time2 = time.time()
     if not Silence:
@@ -907,9 +921,11 @@ def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_
     if not Silence:
         print(f"After read Colmap Cameras: {time2 - time1}s")
     Diary.write(f"After read Colmap Cameras: {time2 - time1}s\n")
-    return train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids, xys, tri
+    return train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list
 
-def SingleImage_readColmapSceneInfo_Part2(path, train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids, xys, tri, NewCams, OriginImageHeight, OriginImageWidth, points_per_triangle=4, device="cuda", get_ply=True, Diary=None, Silence=False):
+def SingleImage_readColmapSceneInfo_Part2(path, train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list, NewCams, OriginImageHeight, OriginImageWidth, points_per_triangle=4, device="cuda", get_ply=True, Diary=None, Silence=False):
+    all_points_3d_Stack = []
+    all_colors_Stack = []
 
     time1 = time.time()
     ply_path = os.path.join(path, "sparse/0/points3D.ply")
@@ -927,111 +943,117 @@ def SingleImage_readColmapSceneInfo_Part2(path, train_cam_infos, test_cam_infos,
             print(f"read_points3D_ID_binary: {time2 - time1}s")
         Diary.write(f"read_points3D_ID_binary: {time2 - time1}s\n")
 
-        # 依据三角网进行采样
-        time1 = time.time()
-        sampled_points, Tri_IDs = SamplePointsFromTri(xys, tri, points_per_triangle)
-        time2 = time.time()
-        if not Silence:
-            print(f"Sample Points: {time2 - time1}s, Sampled Point Number: {sampled_points.shape[0]}")
-        Diary.write(f"Sample Points: {time2 - time1}s, Sampled Point Number: {sampled_points.shape[0]}\n")
-
-        # 进行稀疏点云过滤，仅保留部分需要的点
-        time1 = time.time()
-        LogMask = NewCams[0].LogMask
-        sampled_points, Tri_IDs = PointsFilter(sampled_points, LogMask, OriginImageHeight, OriginImageWidth, LogMask.shape[0], LogMask.shape[1], Tri_IDs=Tri_IDs)
-        time2 = time.time()
-        if not Silence:
-            print(f"Points Filter for sampled_points: {time2 - time1}s, Sampled Points Number: {sampled_points.shape[0]}")
-        Diary.write(f"Points Filter for sampled_points: {time2 - time1}s, Sampled Point Number: {sampled_points.shape[0]}\n")
-
-        time1 = time.time()
-        if xys.shape[0] > 500:
-            sampled_xys, sampled_point3D_ids = PointsFilter(xys, LogMask, OriginImageHeight, OriginImageWidth, LogMask.shape[0], LogMask.shape[1], point3D_ids=point3D_ids)
-        else:
-            sampled_xys = xys
-            sampled_point3D_ids = point3D_ids
-        time2 = time.time()
-        if not Silence:
-            print(f"Points Filter for xys: {time2 - time1}s, Sampled Points Number: {sampled_xys.shape[0]}")
-        Diary.write(f"Points Filter for xys: {time2 - time1}s, Sampled Point Number: {sampled_xys.shape[0]}\n")
-
-        # 仅取出选中影像可见的全部3D点以及其颜色信息
-        # time1 = time.time()
-        # corresponding_3d_points, corresponding_3d_points_rgb = Get_3D_From_2D_2(point3D_ids, POINT3D_IDs, xyz, rgb)
-        # time2 = time.time()
-        # print(f"Find {corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s")
-        # Diary.write(f"Find {corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s\n")
-        #
-        # time1 = time.time()
-        # sampled_corresponding_3d_points, sampled_corresponding_3d_points_rgb = Get_3D_From_2D_2(sampled_point3D_ids, POINT3D_IDs, xyz, rgb)
-        # time2 = time.time()
-        # print(f"Find {sampled_corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s")
-        # Diary.write(f"Find {sampled_corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s\n")
-
-        time1 = time.time()
-        corresponding_3d_points, corresponding_3d_points_rgb, sampled_corresponding_3d_points, sampled_corresponding_3d_points_rgb = Get_3D_From_2D_3(point3D_ids, sampled_point3D_ids, POINT3D_IDs, xyz, rgb)
-        time2 = time.time()
-        if not Silence:
-            print(f"Find {corresponding_3d_points.shape} + {sampled_corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s")
-        Diary.write(f"Find {corresponding_3d_points.shape} + {sampled_corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s\n")
-
-        # 获取用于初始化的稀疏点云
-        if device == 'cuda':
+        for key in list(point3D_ids_list.keys()):
+            # 依据三角网进行采样
             time1 = time.time()
-            # GPU方法
-            tri_simplices = torch.tensor(tri.simplices, dtype=torch.long, device='cuda')
-            xys = torch.tensor(xys, device=device)
-
-            if sampled_points.shape[0] > 0:
-                sampled_points = torch.tensor(sampled_points, dtype=torch.float32, device=device)
-                Tri_IDs = torch.tensor(Tri_IDs, dtype=torch.long, device=device)
-            else:
-                sampled_points = None
-                Tri_IDs = None
-
-            corresponding_3d_points = torch.tensor(corresponding_3d_points, dtype=torch.float32, device=device)
-            corresponding_3d_points_rgb = torch.tensor(corresponding_3d_points_rgb, dtype=torch.float32, device=device)
-
-            if sampled_xys.shape[0] > 0:
-                sampled_corresponding_3d_points = torch.tensor(sampled_corresponding_3d_points, dtype=torch.float32, device=device)
-                sampled_corresponding_3d_points_rgb = torch.tensor(sampled_corresponding_3d_points_rgb, dtype=torch.float32, device=device)
-            else:
-                sampled_corresponding_3d_points = None
-                sampled_corresponding_3d_points_rgb = None
-
+            sampled_points, Tri_IDs = SamplePointsFromTri(xys_list[key], tri_list[key], points_per_triangle)
             time2 = time.time()
             if not Silence:
-                print(f"CPU_numpy to GPU_tensor => {time2 - time1}s")
-            Diary.write(f"CPU_numpy to GPU_tensor => {time2 - time1}s\n")
+                print(f"Sample Points: {time2 - time1}s, Sampled Point Number: {sampled_points.shape[0]}")
+            Diary.write(f"Sample Points: {time2 - time1}s, Sampled Point Number: {sampled_points.shape[0]}\n")
 
+            # 进行稀疏点云过滤，仅保留部分需要的点
             time1 = time.time()
-            all_points_3d, all_colors = Get_3D_Sampled_Points_GPU(sampled_points, Tri_IDs, tri_simplices, xys, corresponding_3d_points, corresponding_3d_points_rgb, sampled_corresponding_3d_points, sampled_corresponding_3d_points_rgb)
-            time2 = time.time()
-            if Tri_IDs is not None:
-                if not Silence:
-                    print(f"3D Sample Points (GPU): {time2 - time1}s {sampled_points.shape[0]} Sampled pts finish Interpolation")
-                Diary.write(f"3D Sample Points (GPU): {time2 - time1}s {sampled_points.shape[0]} Sampled pts finish Interpolation\n")
-            else:
-                if not Silence:
-                    print(f"3D Sample Points (GPU): {time2 - time1}s {0} Sampled pts finish Interpolation")
-                Diary.write(f"3D Sample Points (GPU): {time2 - time1}s {0} Sampled pts finish Interpolation\n")
+            LogMask = None
+            print(len(NewCams), key)
+            for i in range(len(NewCams)):
+                if NewCams[i].image_name == key:
+                    LogMask = NewCams[i].LogMask
+                    break
 
-            time1 = time.time()
-            if all_points_3d is not None:
-                all_points_3d = all_points_3d.detach().cpu().numpy()
-                all_colors = all_colors.detach().cpu().numpy()
+            sampled_points, Tri_IDs = PointsFilter(sampled_points, LogMask, OriginImageHeight, OriginImageWidth, LogMask.shape[0], LogMask.shape[1], Tri_IDs=Tri_IDs)
             time2 = time.time()
             if not Silence:
-                print(f"GPU_tensor to CPU_numpy: {time2 - time1}s")
-            Diary.write(f"GPU_tensor to CPU_numpy: {time2 - time1}s\n")
-        else:
-            # CPU方法
-            all_points_3d, all_colors = Get_3D_Sampled_Points(sampled_points, Tri_IDs, tri, xys, corresponding_3d_points, corresponding_3d_points_rgb, sampled_corresponding_3d_points, sampled_corresponding_3d_points_rgb)
+                print(f"Points Filter for sampled_points: {time2 - time1}s, Sampled Points Number: {sampled_points.shape[0]}")
+            Diary.write(f"Points Filter for sampled_points: {time2 - time1}s, Sampled Point Number: {sampled_points.shape[0]}\n")
+
+            time1 = time.time()
+            if xys_list[key].shape[0] > 500:
+                sampled_xys, sampled_point3D_ids = PointsFilter(xys_list[key], LogMask, OriginImageHeight, OriginImageWidth,
+                                                                LogMask.shape[0], LogMask.shape[1],
+                                                                point3D_ids=point3D_ids_list[key])
+            else:
+                sampled_xys = xys_list[key]
+                sampled_point3D_ids = point3D_ids_list[key]
+            time2 = time.time()
+            if not Silence:
+                print(f"Points Filter for xys: {time2 - time1}s, Sampled Points Number: {sampled_xys.shape[0]}")
+            Diary.write(f"Points Filter for xys: {time2 - time1}s, Sampled Point Number: {sampled_xys.shape[0]}\n")
+
+            time1 = time.time()
+            corresponding_3d_points, corresponding_3d_points_rgb, sampled_corresponding_3d_points, sampled_corresponding_3d_points_rgb = Get_3D_From_2D_3(point3D_ids_list[key], sampled_point3D_ids, POINT3D_IDs, xyz, rgb)
+            time2 = time.time()
+            if not Silence:
+                print(f"Find {corresponding_3d_points.shape} + {sampled_corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s")
+            Diary.write(f"Find {corresponding_3d_points.shape} + {sampled_corresponding_3d_points.shape} 2D pts to 3D pts => {time2 - time1}s\n")
+
+            # 获取用于初始化的稀疏点云
+            if device == 'cuda':
+                time1 = time.time()
+                # GPU方法
+                tri_simplices = torch.tensor(tri_list[key].simplices, dtype=torch.long, device='cuda')
+                xys = torch.tensor(xys_list[key], device=device)
+
+                if sampled_points.shape[0] > 0:
+                    sampled_points = torch.tensor(sampled_points, dtype=torch.float32, device=device)
+                    Tri_IDs = torch.tensor(Tri_IDs, dtype=torch.long, device=device)
+                else:
+                    sampled_points = None
+                    Tri_IDs = None
+
+                corresponding_3d_points = torch.tensor(corresponding_3d_points, dtype=torch.float32, device=device)
+                corresponding_3d_points_rgb = torch.tensor(corresponding_3d_points_rgb, dtype=torch.float32, device=device)
+
+                if sampled_xys.shape[0] > 0:
+                    sampled_corresponding_3d_points = torch.tensor(sampled_corresponding_3d_points, dtype=torch.float32, device=device)
+                    sampled_corresponding_3d_points_rgb = torch.tensor(sampled_corresponding_3d_points_rgb, dtype=torch.float32, device=device)
+                else:
+                    sampled_corresponding_3d_points = None
+                    sampled_corresponding_3d_points_rgb = None
+
+                time2 = time.time()
+                if not Silence:
+                    print(f"CPU_numpy to GPU_tensor => {time2 - time1}s")
+                Diary.write(f"CPU_numpy to GPU_tensor => {time2 - time1}s\n")
+
+                time1 = time.time()
+                all_points_3d, all_colors = Get_3D_Sampled_Points_GPU(sampled_points, Tri_IDs, tri_simplices, xys,
+                                                                      corresponding_3d_points,
+                                                                      corresponding_3d_points_rgb,
+                                                                      sampled_corresponding_3d_points,
+                                                                      sampled_corresponding_3d_points_rgb)
+                time2 = time.time()
+                if Tri_IDs is not None:
+                    if not Silence:
+                        print(f"3D Sample Points (GPU): {time2 - time1}s {sampled_points.shape[0]} Sampled pts finish Interpolation")
+                    Diary.write(f"3D Sample Points (GPU): {time2 - time1}s {sampled_points.shape[0]} Sampled pts finish Interpolation\n")
+                else:
+                    if not Silence:
+                        print(f"3D Sample Points (GPU): {time2 - time1}s {0} Sampled pts finish Interpolation")
+                    Diary.write(f"3D Sample Points (GPU): {time2 - time1}s {0} Sampled pts finish Interpolation\n")
+
+                time1 = time.time()
+                if all_points_3d is not None:
+                    all_points_3d = all_points_3d.detach().cpu().numpy()
+                    all_colors = all_colors.detach().cpu().numpy()
+                    if len(list(point3D_ids_list.keys())) >= 2:
+                        all_points_3d_Stack.append(all_points_3d)
+                        all_colors_Stack.append(all_colors)
+                time2 = time.time()
+                if not Silence:
+                    print(f"GPU_tensor to CPU_numpy: {time2 - time1}s")
+                Diary.write(f"GPU_tensor to CPU_numpy: {time2 - time1}s\n")
+            else:
+                # CPU方法
+                all_points_3d, all_colors = Get_3D_Sampled_Points(sampled_points, Tri_IDs, tri_list[key], xys_list[key], corresponding_3d_points, corresponding_3d_points_rgb, sampled_corresponding_3d_points, sampled_corresponding_3d_points_rgb)
+
+        if len(list(point3D_ids_list.keys())) >= 2:
+            all_points_3d = np.concatenate(all_points_3d_Stack, axis=0)
+            all_colors = np.concatenate(all_colors_Stack, axis=0)
 
         time1 = time.time()
         if all_points_3d is not None:
-            if not Silence:
-                print(f"Newly Added Gaussians Num: {all_points_3d.shape[0]}")
+            print(f"Next Newly Added Gaussians Num: {all_points_3d.shape[0]}")
             if get_ply:
                 if not Silence:
                     print("Converting point3d.bin to .ply, will happen only the first time you open the scene.")
@@ -1174,7 +1196,7 @@ def SingleImage_readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True
                            ply_path=ply_path)
     return scene_info
 
-def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri_Mask=False):
+def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri_Mask=False, No_Key_Region=False):
     try:
         cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
         cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
@@ -1187,7 +1209,10 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri
         cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
-    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=os.path.join(path, reading_dir), Do_Get_Tri_Mask=Do_Get_Tri_Mask)
+    image_folder_path = os.path.join(os.path.dirname(path), reading_dir)
+    if not os.path.exists(image_folder_path):
+        image_folder_path = os.path.join(path, reading_dir)
+    cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=image_folder_path, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 
     if eval:

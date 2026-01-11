@@ -30,7 +30,7 @@ class Scene:
 
     gaussians : GaussianModel
 
-    def __init__(self, args, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], Do_Get_Tri_Mask=False):
+    def __init__(self, args, gaussians : GaussianModel, load_iteration=None, shuffle=True, resolution_scales=[1.0], Do_Get_Tri_Mask=False, No_Key_Region=False):
         """b
         :param path: Path to colmap scene main folder.
         """
@@ -49,7 +49,7 @@ class Scene:
         self.test_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask)
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region)
             self.scene_info = scene_info
             self.scene_info_traincam = scene_info.train_cameras
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):

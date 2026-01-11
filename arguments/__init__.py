@@ -104,6 +104,11 @@ class PipelineParams(ParamGroup):
         self.Single = False
         self.render_TDOM = False
         self.Get_Pos = False
+
+        # Use for Ablation
+        self.No_Key = False
+        self.No_Sampling = False
+        self.No_Adaptive = False
         super().__init__(parser, "Pipeline Parameters")
 
 class OptimizationParams(ParamGroup):
@@ -150,7 +155,7 @@ class OptimizationParams(ParamGroup):
         self.InitialTrainingEvaluateInterval = 500
         self.FinalTrainingEvaluateInterval = 1000
         self.spatial_lr_scale = 0.0
-        self.Mean = 195
+        self.Mean = 200
         self.points_per_triangle = 8
         self.OriginImageHeight = 0
         self.OriginImageWidth = 0

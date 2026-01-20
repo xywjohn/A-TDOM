@@ -140,5 +140,6 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
 If you want to generate TDOM while training 3DGS field, please use 2 commonds: ```--render_TDOM``` and ```--TDOM_FoVx``` from ```Optional command Line Arguments for ContinuosProgressiveTrain.py```. Meanwhile, please modify the parameters T and R in ContinuosProgressiveTrain4.py => GaussianTrainer class => render_TDOM function. Here, T represents the 3D coordinates of the camera, R represents the camera's rotation matrix, and ```--TDOM_FoVx``` specifies the camera's field of view. If you wish to generate the TDOM for the entire scene, it is recommended to select a camera located near the center of the scene and to increase the field of view.
 
 ```shell
-python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Model_Path_Dir .../OutputDir --FinalOptimizationIterations 4000 --StartFromImageNo 30 --OriginImageHeight 1080 --OriginImageWidth 1920 --points_per_triangle 30 --Use_Tri_Mask --render_TDOM --TDOM_FoVx 3.00
+python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Model_Path_Dir .../OutputDir --FinalOptimizationIterations 4000 --StartFromImageNo 30 --OriginImageHeight 1080 --OriginImageWidth 1920 --points_per_triangle 30 --Use_Tri_Mask --render_TDOM --GSD_x 0.15 --GSD_y 0.15
+
 ```

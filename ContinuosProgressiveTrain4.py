@@ -293,6 +293,132 @@ def LogImage_minus(Log1, Log2, save_Dir, image_name, save=False):
 
     return psi_B
 
+def remove_outliers_quantile(x, y, q=0.995):
+    """
+    x, y: (N,) torch.tensor on CUDA
+    q:    保留的分位数，0.99 ~ 0.999 都常用
+    """
+    x_min, x_max = torch.quantile(x, torch.tensor([1-q, q], device=x.device))
+    y_min, y_max = torch.quantile(y, torch.tensor([1-q, q], device=y.device))
+
+    mask = (x >= x_min) & (x <= x_max) & \
+           (y >= y_min) & (y <= y_max)
+    return mask
+
+def camera_orthogonal_bounding_rectangle(points, R, T):
+    """
+    points: (N, 3) torch tensor
+    R: (3, 3) torch tensor (world from camera)
+    T: (3,) torch tensor
+    """
+
+    with torch.no_grad():
+
+        device = points.device
+        dtype = points.dtype
+
+        # ---- 1. camera forward direction ----
+
+        R = R.T.to(device=device, dtype=dtype)
+        T = T.to(device=device, dtype=dtype)
+
+        d = R[:, 2]
+        d = d / torch.norm(d)
+        print(d)
+        print(torch.dot(d, points.mean(dim=0) - T))
+
+        # ---- 2. plane basis (u, v) ----
+        tmp = torch.tensor([1.0, 0.0, 0.0], device=points.device, dtype=dtype)
+        if torch.abs(torch.dot(tmp, d)) > 0.9:
+            tmp = torch.tensor([0.0, 1.0, 0.0], device=points.device, dtype=dtype)
+
+        u = torch.cross(d, tmp)
+        u = u / torch.norm(u)
+        v = torch.cross(d, u)
+
+        # ---- 3. project points to plane ----
+        # P = points - T[None, :]
+        P = points
+        x = P @ u
+        y = P @ v
+
+        mask = remove_outliers_quantile(x, y, q=0.9995)
+        x = x[mask]
+        y = y[mask]
+
+        # x_np = x.detach().cpu().numpy()
+        # y_np = y.detach().cpu().numpy()
+        #
+        # plt.figure(figsize=(6, 6))
+        # plt.scatter(x_np, y_np, s=1)
+        # plt.gca().set_aspect('equal')
+        # plt.xlabel("u axis")
+        # plt.ylabel("v axis")
+        # plt.title("Orthographic projection onto plane")
+        # plt.savefig("scatter.jpg", dpi=300)
+
+        # ---- 4. 2D bounding box ----
+        xmin, xmax = x.min().item(), x.max().item()
+        ymin, ymax = y.min().item(), y.max().item()
+
+        width = xmax - xmin
+        height = ymax - ymin
+
+        cx = (xmin + xmax) * 0.5
+        cy = (ymin + ymax) * 0.5
+
+        # ---- 5. rectangle center on ray ----
+        center_plane = T + cx * u + cy * v
+        t = torch.dot(center_plane - T, d)
+        center = T + t * d
+
+        # ---- 6. rectangle corners ----
+        hw, hh = width * 0.5, height * 0.5
+        corners = torch.stack([
+            center + hw*u + hh*v,
+            center + hw*u - hh*v,
+            center - hw*u - hh*v,
+            center - hw*u + hh*v
+        ])
+
+    return {
+        "center": center,
+        "normal": d,
+        "u": u,
+        "v": v,
+        "width": height,
+        "height": width,
+        "corners": corners,
+        "xy_max_min": [ymin, ymax, xmin, xmax],
+        "Gaussians_center": [(ymin + ymax) / 2, -(xmin + xmax) / 2]
+    }
+
+def expand_image_gray(img_path, save_path, width0, height0, gray_value=128):
+    """
+    将图像向左、向上扩张，并用灰色填充
+    """
+    img = Image.open(img_path)
+    width, height = img.size
+
+    if width0 < width or height0 < height:
+        raise ValueError("width0 和 height0 必须不小于原图尺寸")
+
+    # 创建灰色背景
+    background = Image.new(
+        mode=img.mode,
+        size=(width0, height0),
+        color=(gray_value, gray_value, gray_value)
+    )
+
+    # 原图放在右下角
+    offset_x = width0 - width
+    offset_y = height0 - height
+
+    background.paste(img, (offset_x, offset_y))
+    background.save(save_path)
+
+    # print(f"Saved expanded image to {save_path}")
+
 # 前端，第一个线程，主要用于读取数据以及一些数据预处理
 class DataPreProccesser(mp.Process):
     # 构造函数
@@ -758,6 +884,10 @@ class GaussianTrainer(mp.Process):
         # 若该列表不为空，则训练影像时只会从该列表中的影像来选取
         self.ChosenImageNames = []
 
+        # TDOM的地面分辨率
+        self.GSD_x = self.args.GSD_x
+        self.GSD_y = self.args.GSD_y
+
         self.NewCams = []
 
         self.commond = None
@@ -1121,26 +1251,56 @@ class GaussianTrainer(mp.Process):
                     render_pkg = render(self.NewCams[i], self.gaussians, self.args, self.bg, Render_Mask=self.NewCams[0].Tri_Mask)
                     image = render_pkg["render"]
                     self.DataSaver_queue.put(["SaveImage", image])
+                    self.DataSaver_queue.put(["SaveGT", self.NewCams[i].image_name])
         if Training_Type == "On_The_Fly" and self.args.render_TDOM:
             print("GaussianTrainer: Save TDOM Results...")
             time1 = time.time()
             with torch.no_grad():
-                W, H = 4000, 5000
+                # W, H = 4000, 5000
+                #
+                # if self.TDOM_Cam is None:
+                #     T = torch.tensor([10.0379, 58.1547, -0.5450])  # 平移向量，表示相机位置
+                #     R = np.array([[0.98391801, 0.17848249, 0.00702562],
+                #                   [-0.17858312, 0.98375663, 0.01819236],
+                #                   [-0.00366448, -0.01915445, 0.99980982]])
+                #
+                #     FoVx = self.args.TDOM_FoVx
+                #     aspect_ratio = 8000 / 10000
+                #     FoVy = 2 * math.atan((1 / aspect_ratio) * math.tan(FoVx / 2))
+                #
+                #     # 创建 DummyCamera 实例
+                #     self.TDOM_Cam = DummyCamera(R, T, FoVx, FoVy, W, H)
+                #     # 创建 DummyPipeline 实例
+                #     self.TDOM_pipeline = DummyPipeline()
+                #
+                # TDOM = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background, Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
 
-                if self.TDOM_Cam is None:
-                    T = torch.tensor([10.0379, 58.1547, -0.5450])  # 平移向量，表示相机位置
-                    R = np.array([[0.98391801, 0.17848249, 0.00702562],
-                                  [-0.17858312, 0.98375663, 0.01819236],
-                                  [-0.00366448, -0.01915445, 0.99980982]])
+                Temp_Cam = self.scene.getTrainCameras().copy()[0]
+                R = Temp_Cam.R
+                T = torch.tensor(Temp_Cam.T)
+                R_torch = torch.tensor([[R[0][0], R[0][1], R[0][2]],
+                                        [R[1][0], R[1][1], R[1][2]],
+                                        [R[2][0], R[2][1], R[2][2]]])
+                rectangle = camera_orthogonal_bounding_rectangle(self.gaussians.get_xyz, R_torch, T)
+                T[0] = rectangle["Gaussians_center"][0]
+                T[1] = rectangle["Gaussians_center"][1]
 
-                    FoVx = self.args.TDOM_FoVx
-                    aspect_ratio = 8000 / 10000
-                    FoVy = 2 * math.atan((1 / aspect_ratio) * math.tan(FoVx / 2))
+                scale = 0.13 * 1.2
+                far = 1.0
+                ratio = 1.0
+                FoVx = 2 * math.atan((rectangle["width"] * scale) / (2 * far * ratio))
+                FoVy = 2 * math.atan((rectangle["height"] * scale) / (2 * far * ratio))
+                if self.GSD_x == 0.00 or self.GSD_y == 0.00:
+                    aspect_ratio = rectangle["width"] / rectangle["height"]
+                    W, H = 4000, int(4000 / aspect_ratio)
+                else:
+                    W = rectangle["width"] / self.GSD_x
+                    H = rectangle["height"] / self.GSD_y
 
-                    # 创建 DummyCamera 实例
-                    self.TDOM_Cam = DummyCamera(R, T, FoVx, FoVy, W, H)
-                    # 创建 DummyPipeline 实例
-                    self.TDOM_pipeline = DummyPipeline()
+                # 创建 DummyCamera 实例
+                self.TDOM_Cam = DummyCamera(R, T, FoVx, FoVy, W, H)
+                # 创建 DummyPipeline 实例
+                self.TDOM_pipeline = DummyPipeline()
 
                 TDOM = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background, Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
 
@@ -1474,21 +1634,51 @@ class DataSaver(mp.Process):
     # 构造函数
     def __init__(self):
         super().__init__()
+        self.GTImageRootPath = None
+        self.GTImagePath = None
         self.DataSaver_queue = None
         self.SaveDirRootPath = None
+        self.Intermediate_GT_Path = None
         self.Intermediate_RGB_Render_Path = None
         self.Intermediate_TDOM_Render_Path = None
+        self.Intermediate_TDOM_Gray_Render_Path = None
+        self.SaveGTNumber = 0
         self.SaveImageNumber = 0
         self.SaveTDOMNumber = 0
+        self.MaxTDOMWidth = 0
+        self.MaxTDOMHeight = 0
         self.StartFromImageNo = 0
 
     # 指定保存位置并创建输出文件夹
     def MakeDirs(self):
+        self.Intermediate_GT_Path = os.path.join(self.SaveDirRootPath, "GT")
         self.Intermediate_RGB_Render_Path = os.path.join(self.SaveDirRootPath, "Render")
         self.Intermediate_TDOM_Render_Path = os.path.join(self.SaveDirRootPath, "TDOM")
+        self.Intermediate_TDOM_Gray_Render_Path = os.path.join(self.SaveDirRootPath, "TDOM_Gray")
         os.makedirs(self.SaveDirRootPath, exist_ok=True)
+        os.makedirs(self.Intermediate_GT_Path, exist_ok=True)
         os.makedirs(self.Intermediate_RGB_Render_Path, exist_ok=True)
         os.makedirs(self.Intermediate_TDOM_Render_Path, exist_ok=True)
+        os.makedirs(self.Intermediate_TDOM_Gray_Render_Path, exist_ok=True)
+
+    # 保存一张RGB影像的GT
+    def SaveGT(self, image_name):
+        with torch.no_grad():
+            self.GTImagePath = os.path.join(self.GTImageRootPath, str(self.StartFromImageNo + self.SaveGTNumber + 1), "images")
+            SpanName = ".jpg"
+            FromPath = os.path.join(self.GTImagePath, image_name + SpanName)
+            if not os.path.exists(FromPath):
+                SpanName = ".JPG"
+                FromPath = os.path.join(self.GTImagePath, image_name + SpanName)
+            if not os.path.exists(FromPath):
+                SpanName = ".png"
+                FromPath = os.path.join(self.GTImagePath, image_name + SpanName)
+            if not os.path.exists(FromPath):
+                print("Image No Exist!!!")
+            else:
+                ToPath = os.path.join(self.Intermediate_GT_Path, str(self.SaveGTNumber) + SpanName)
+                shutil.copy2(FromPath, ToPath)
+                self.SaveGTNumber += 1
 
     # 保存一张RGB影像
     def SaveImage(self, image):
@@ -1503,8 +1693,18 @@ class DataSaver(mp.Process):
     # 保存TDOM
     def SaveTDOM(self, tdom):
         with torch.no_grad():
-            rendering_filepath = os.path.join(self.Intermediate_TDOM_Render_Path, f"{self.SaveTDOMNumber}.jpg")
-            torchvision.utils.save_image(tdom, rendering_filepath)
+            # rendering_filepath = os.path.join(self.Intermediate_TDOM_Render_Path, f"{self.SaveTDOMNumber}.jpg")
+            # torchvision.utils.save_image(tdom, rendering_filepath)
+            ImageOutput = (tdom - tdom.min()) / (tdom.max() - tdom.min())
+            ImageOutput = ImageOutput.permute(1, 2, 0).cpu().numpy()
+            ImageOutput = (ImageOutput * 255).astype(np.uint8)
+            height, width = ImageOutput.shape[:2]
+            if self.MaxTDOMWidth < width:
+                self.MaxTDOMWidth = width
+            if self.MaxTDOMHeight < height:
+                self.MaxTDOMHeight = height
+            ImageOutput = Image.fromarray(ImageOutput)
+            ImageOutput.save(os.path.join(self.Intermediate_TDOM_Render_Path, f"{self.SaveTDOMNumber}.jpg"))
             self.SaveTDOMNumber += 1
 
     # 根据RGB影像的保存结果生成Demo
@@ -1543,20 +1743,15 @@ class DataSaver(mp.Process):
 
     # 根据TDOM的保存结果生成Demo
     def GetTDOMDemo(self):
-        # 获取影像的尺寸
-        first_image_path = os.path.join(self.Intermediate_TDOM_Render_Path, "0.jpg")
-        frame = cv2.imread(first_image_path)
-        height, width, layers = frame.shape
-
         scale = 0.5
-        height = int(height * scale)
-        width = int(width * scale)
+        height = int(self.MaxTDOMHeight * scale)
+        width = int(self.MaxTDOMWidth * scale)
         new_size = (width, height)
 
         # 定义视频编码器和输出格式
         fourcc = cv2.VideoWriter_fourcc(*'mp4v')  # 编码格式，例如'XVID'或'mp4v'
         fps = 4  # 每秒帧数
-        Demo_TDOM = cv2.VideoWriter(os.path.join(self.args.Model_Path_Dir, "TDOM.mp4"), fourcc, fps, (width, height))
+        Demo_TDOM = cv2.VideoWriter(os.path.join(self.SaveDirRootPath, "TDOM.mp4"), fourcc, fps, (width, height))
 
         # 将每帧添加到视频中
         progress_bar = tqdm(range(0, self.SaveTDOMNumber + self.StartFromImageNo), desc="Get_TDOM_Demo", initial=0)
@@ -1569,7 +1764,14 @@ class DataSaver(mp.Process):
                 Demo_TDOM.write(black_frame)
             else:
                 img_path = os.path.join(self.Intermediate_TDOM_Render_Path, f"{i - self.StartFromImageNo}.jpg")
-                frame = cv2.imread(img_path)
+                expand_image_gray(
+                    img_path=img_path,
+                    save_path=os.path.join(self.Intermediate_TDOM_Gray_Render_Path, f"{i - self.StartFromImageNo}.jpg"),
+                    width0=self.MaxTDOMWidth,
+                    height0=self.MaxTDOMHeight,
+                    gray_value=128  # 中性灰
+                )
+                frame = cv2.imread(os.path.join(self.Intermediate_TDOM_Gray_Render_Path, f"{i - self.StartFromImageNo}.jpg"))
                 frame = cv2.resize(frame, new_size, interpolation=cv2.INTER_AREA)
                 cv2.putText(frame, text, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2, cv2.LINE_AA)
                 Demo_TDOM.write(frame)
@@ -1579,7 +1781,7 @@ class DataSaver(mp.Process):
         Demo_TDOM.release()
         cv2.destroyAllWindows()
 
-        print(f"TDOM_Demo save at {os.path.join(self.args.Model_Path_Dir, 'TDOM.mp4')}")
+        print(f"TDOM_Demo save at {os.path.join(self.SaveDirRootPath, 'TDOM.mp4')}")
 
     # 输出时间消耗
     def SaveTimeCost(self, TimeCost, imagenum):
@@ -1606,6 +1808,8 @@ class DataSaver(mp.Process):
                 Commond_from_GaussianTrainer = self.DataSaver_queue.get()
                 if Commond_from_GaussianTrainer[0] == "SaveImage":
                     self.SaveImage(Commond_from_GaussianTrainer[1])
+                elif Commond_from_GaussianTrainer[0] == "SaveGT":
+                    self.SaveGT(Commond_from_GaussianTrainer[1])
                 elif Commond_from_GaussianTrainer[0] == "SaveTDOM":
                     self.SaveTDOM(Commond_from_GaussianTrainer[1])
                 elif Commond_from_GaussianTrainer[0] == "GetDemo":
@@ -1641,6 +1845,7 @@ class On_the_Fly_GS:
         self.DataSaver = DataSaver()
         self.DataSaver.DataSaver_queue = self.DataSaver_queue
         self.DataSaver.SaveDirRootPath = os.path.join(self.GaussianTrainer.args.Model_Path_Dir, "Intermediate_Results")
+        self.DataSaver.GTImageRootPath = self.GaussianTrainer.args.Source_Path_Dir
         self.DataSaver.StartFromImageNo = self.GaussianTrainer.args.StartFromImageNo
 
         print("Start Thread...\n")

@@ -108,6 +108,8 @@ def GetArgs():
 
     # 输出存储训练后模型的存储位置
     print("Optimizing " + args.Source_Path_Dir)
+    if os.path.exists(os.path.join(args.Source_Path_Dir, "GaussianSplatting")):
+        args.Source_Path_Dir = os.path.join(args.Source_Path_Dir, "GaussianSplatting")
 
     return args, lp, op, pp
 
@@ -513,8 +515,10 @@ class DataPreProccesser(mp.Process):
     # 根据新的稀疏点云来扩张高斯点云
     def ExpandingGS_From_SparsePCD2(self, TrainCameras, get_ply=False):
         if os.path.exists(os.path.join(self.args.source_path_second, "sparse")):
+            NewInputFormat = False
             CurrentImagesNames = list(TrainCameras.keys())
-            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list = sceneLoadTypeCallbacks[
+            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list = \
+            sceneLoadTypeCallbacks[
                 "Single_Image1"](
                 self.args.source_path_second,
                 self.args.images, self.args.eval,
@@ -523,7 +527,25 @@ class DataPreProccesser(mp.Process):
                 CurrentImagesNames=CurrentImagesNames,
                 Diary=self.Diary,
                 Silence=self.Silence,
-                No_Key_Region=self.args.No_Key)
+                No_Key_Region=self.args.No_Key,
+                NewInputFormat=NewInputFormat,
+                Image_Folder_Path=self.args.Image_Folder_Path)
+        elif os.path.exists(os.path.join(self.args.source_path_second, "bin")):
+            NewInputFormat = True
+            CurrentImagesNames = list(TrainCameras.keys())
+            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list = \
+            sceneLoadTypeCallbacks[
+                "Single_Image1"](
+                self.args.source_path_second,
+                self.args.images, self.args.eval,
+                Do_Get_Tri_Mask=self.args.Use_Tri_Mask,
+                Image_Name="",
+                CurrentImagesNames=CurrentImagesNames,
+                Diary=self.Diary,
+                Silence=self.Silence,
+                No_Key_Region=self.args.No_Key,
+                NewInputFormat=NewInputFormat,
+                Image_Folder_Path=self.args.Image_Folder_Path)
         else:
             assert False, "Could not recognize scene type!"
 
@@ -569,7 +591,7 @@ class DataPreProccesser(mp.Process):
                                                              self.args.OriginImageHeight, self.args.OriginImageWidth,
                                                              get_ply=get_ply,
                                                              points_per_triangle=self.args.points_per_triangle,
-                                                             device="cuda", Diary=self.Diary, Silence=self.Silence)
+                                                             device="cuda", Diary=self.Diary, Silence=self.Silence, NewInputFormat=NewInputFormat)
 
         time1 = time.time()
         if scene_info.ply_path is not None:
@@ -1553,10 +1575,11 @@ class GaussianTrainer(mp.Process):
                         # 更新位姿
                         for i in range(len(self.scene.train_cameras[1.0])):
                             image_name = self.scene.train_cameras[1.0][i].image_name
-                            self.scene.train_cameras[1.0][i].world_view_transform = UpdatedTrainCamsPos[image_name][0].cuda()
-                            self.scene.train_cameras[1.0][i].projection_matrix = UpdatedTrainCamsPos[image_name][1].cuda()
-                            self.scene.train_cameras[1.0][i].full_proj_transform = UpdatedTrainCamsPos[image_name][2].cuda()
-                            self.scene.train_cameras[1.0][i].camera_center = UpdatedTrainCamsPos[image_name][3].cuda()
+                            if image_name in UpdatedTrainCamsPos:
+                                self.scene.train_cameras[1.0][i].world_view_transform = UpdatedTrainCamsPos[image_name][0].cuda()
+                                self.scene.train_cameras[1.0][i].projection_matrix = UpdatedTrainCamsPos[image_name][1].cuda()
+                                self.scene.train_cameras[1.0][i].full_proj_transform = UpdatedTrainCamsPos[image_name][2].cuda()
+                                self.scene.train_cameras[1.0][i].camera_center = UpdatedTrainCamsPos[image_name][3].cuda()
 
                         # 将新的影像加入
                         for i in range(len(self.NewCams)):
@@ -1664,7 +1687,10 @@ class DataSaver(mp.Process):
     # 保存一张RGB影像的GT
     def SaveGT(self, image_name):
         with torch.no_grad():
-            self.GTImagePath = os.path.join(self.GTImageRootPath, str(self.StartFromImageNo + self.SaveGTNumber + 1), "images")
+            if os.path.exists(os.path.join(self.GTImageRootPath, str(self.StartFromImageNo + self.SaveGTNumber + 1), "images")):
+                self.GTImagePath = os.path.join(self.GTImageRootPath, str(self.StartFromImageNo + self.SaveGTNumber + 1), "images")
+            else:
+                self.GTImagePath = self.GTImageRootPath
             SpanName = ".jpg"
             FromPath = os.path.join(self.GTImagePath, image_name + SpanName)
             if not os.path.exists(FromPath):
@@ -1845,8 +1871,13 @@ class On_the_Fly_GS:
         self.DataSaver = DataSaver()
         self.DataSaver.DataSaver_queue = self.DataSaver_queue
         self.DataSaver.SaveDirRootPath = os.path.join(self.GaussianTrainer.args.Model_Path_Dir, "Intermediate_Results")
-        self.DataSaver.GTImageRootPath = self.GaussianTrainer.args.Source_Path_Dir
         self.DataSaver.StartFromImageNo = self.GaussianTrainer.args.StartFromImageNo
+        if self.GaussianTrainer.args.Image_Folder_Path != "":
+            self.DataSaver.GTImageRootPath = self.GaussianTrainer.args.Image_Folder_Path
+        elif os.path.exists(os.path.join(self.GaussianTrainer.args.Source_Path_Dir, "images")):
+            self.DataSaver.GTImageRootPath = os.path.join(self.GaussianTrainer.args.Source_Path_Dir, "images")
+        else:
+            self.DataSaver.GTImageRootPath = self.GaussianTrainer.args.Source_Path_Dir
 
         print("Start Thread...\n")
         self.GaussianTrainer_Thread = mp.Process(target=self.GaussianTrainer.run)

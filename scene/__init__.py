@@ -52,6 +52,10 @@ class Scene:
             scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region)
             self.scene_info = scene_info
             self.scene_info_traincam = scene_info.train_cameras
+        elif os.path.exists(os.path.join(args.source_path, "bin")):
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region, NewInputFormat=True)
+            self.scene_info = scene_info
+            self.scene_info_traincam = scene_info.train_cameras
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):
             print("Found transforms_train.json file, assuming Blender data set!")
             scene_info = sceneLoadTypeCallbacks["Blender"](args.source_path, args.white_background, args.eval)

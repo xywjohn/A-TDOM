@@ -759,9 +759,11 @@ def SingleImage_readColmapCameras(cam_extrinsics, cam_intrinsics, images_folder,
                 tri_list[image_name] = tri
             else:
                 Tri_Mask = None
+
         else:
             image = None
             Tri_Mask = None
+
 
         cam_info = CameraInfo(uid=uid, R=R, T=T, FovY=FovY, FovX=FovX, image=image,
                                   image_path=image_path, image_name=image_name, width=width, height=height,
@@ -861,18 +863,24 @@ def On_the_Fly_readColmapSceneInfo(path, images, eval, CurrentImagesNames, llffh
                            ply_path=ply_path)
     return scene_info
 
-def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_Name="", CurrentImagesNames=[], Do_Get_Tri_Mask=False, Diary=None, Silence=False, No_Key_Region=False):
+def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_Name="", CurrentImagesNames=[], Do_Get_Tri_Mask=False, Diary=None, Silence=False, No_Key_Region=False, NewInputFormat=False):
     time1 = time.time()
-    try:
-        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
-        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+    if not NewInputFormat:
+        try:
+            cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
+            cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+            cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+            cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+        except:
+            cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
+            cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
+            cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+            cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+    else:
+        cameras_extrinsic_file = os.path.join(path, "bin", "images.bin")
+        cameras_intrinsic_file = os.path.join(path, "bin", "cameras.bin")
         cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
-    except:
-        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
-        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
-        cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
-        cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     time2 = time.time()
     if not Silence:
@@ -923,14 +931,19 @@ def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_
     Diary.write(f"After read Colmap Cameras: {time2 - time1}s\n")
     return train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list
 
-def SingleImage_readColmapSceneInfo_Part2(path, train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list, NewCams, OriginImageHeight, OriginImageWidth, points_per_triangle=4, device="cuda", get_ply=True, Diary=None, Silence=False):
+def SingleImage_readColmapSceneInfo_Part2(path, train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list, NewCams, OriginImageHeight, OriginImageWidth, points_per_triangle=4, device="cuda", get_ply=True, Diary=None, Silence=False, NewInputFormat=False):
     all_points_3d_Stack = []
     all_colors_Stack = []
 
     time1 = time.time()
-    ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bin_path = os.path.join(path, "sparse/0/points3D.bin")
-    txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    if not NewInputFormat:
+        ply_path = os.path.join(path, "sparse/0/points3D.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    else:
+        ply_path = os.path.join(path, "bin/points3D.ply")
+        bin_path = os.path.join(path, "bin/points3D.bin")
+        txt_path = os.path.join(path, "bin/points3D.txt")
 
     if not os.path.exists(ply_path):
         try:
@@ -1196,17 +1209,23 @@ def SingleImage_readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True
                            ply_path=ply_path)
     return scene_info
 
-def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri_Mask=False, No_Key_Region=False):
-    try:
-        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
-        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri_Mask=False, No_Key_Region=False, NewInputFormat=False):
+    if not NewInputFormat:
+        try:
+            cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
+            cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.bin")
+            cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
+            cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
+        except:
+            cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
+            cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
+            cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
+            cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
+    else:
+        cameras_extrinsic_file = os.path.join(path, "bin", "images.bin")
+        cameras_intrinsic_file = os.path.join(path, "bin", "cameras.bin")
         cam_extrinsics = read_extrinsics_binary(cameras_extrinsic_file)
         cam_intrinsics = read_intrinsics_binary(cameras_intrinsic_file)
-    except:
-        cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.txt")
-        cameras_intrinsic_file = os.path.join(path, "sparse/0", "cameras.txt")
-        cam_extrinsics = read_extrinsics_text(cameras_extrinsic_file)
-        cam_intrinsics = read_intrinsics_text(cameras_intrinsic_file)
 
     reading_dir = "images" if images == None else images
     image_folder_path = os.path.join(os.path.dirname(path), reading_dir)
@@ -1224,9 +1243,15 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri
 
     nerf_normalization = getNerfppNorm(train_cam_infos)
 
-    ply_path = os.path.join(path, "sparse/0/points3D.ply")
-    bin_path = os.path.join(path, "sparse/0/points3D.bin")
-    txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    if not NewInputFormat:
+        ply_path = os.path.join(path, "sparse/0/points3D.ply")
+        bin_path = os.path.join(path, "sparse/0/points3D.bin")
+        txt_path = os.path.join(path, "sparse/0/points3D.txt")
+    else:
+        ply_path = os.path.join(path, "bin/points3D.ply")
+        bin_path = os.path.join(path, "bin/points3D.bin")
+        txt_path = os.path.join(path, "bin/points3D.txt")
+
     if not os.path.exists(ply_path):
         try:
             xyz, rgb, _ = read_points3D_binary(bin_path)

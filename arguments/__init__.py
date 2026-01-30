@@ -144,6 +144,7 @@ class OptimizationParams(ParamGroup):
         self.GlobalOptimizationIteration = 100
         self.Source_Path_Dir = ""
         self.Model_Path_Dir = ""
+        self.Image_Folder_Path = ""
         self.IterationFirstScene = 2000
         self.IterationPerMergeScene = 100
         self.FinalOptimizationIterations = 2000

@@ -1,9 +1,22 @@
+
 # A-TDOM: Active TDOM via On-the-Fly 3DGS
 Yiwei Xu, Xiang Wang, Yifei Yu, Wentian Gan, Luca Morelli, Giulio Perda, Xiongwu Xiao, Zongqian Zhan, Xin Wang, and Fabio Remondino
 
 ![image](0.png)
 
-## Cloning the Repository
+# Important Notice (Please Read before Start!!!)
+
+The Python environment configuration differs significantly between **Windows** and **Linux** in this project,
+and the supported functionalities also vary across the two platforms.
+
+If you intend to run the project on **Windows** and execute it concurrently with **On-the-Fly SfM**,
+thereby enabling true *simultaneous camera pose acquisition, 3DGS training, and TDOM generation*,
+please refer to [Windows Env Setting](#windows-env-setting) and [Windows Run](#windows-run).
+
+If you intend to run the project on **Linux** and only perform `Simulation Experiments`,
+please refer to [Linux Env Setting](#linux-env-setting) and [Linux Run](#linux-run).
+
+# Cloning the Repository
 
 ```shell
 # SSH
@@ -15,88 +28,111 @@ or
 git clone https://github.com/xywjohn/A-TDOM --recursive
 ```
 
-After that, please manually decompress the diff-gaussian-rasterization.zip, fused-ssim.zip and simple-knn.zip archive located under the submodules directory.
+After that, please manually decompress the diff-gaussian-rasterization.zip, 
+fused-ssim.zip and simple-knn.zip archive located under the `submodules` directory.
 
-## Setup
+# Windows Env Setting
 
-```shell
-conda env create --file environment.yml
-conda activate ATDOM
-cd .../A-TDOM
-
-pip install pytorch3d
-pip install open3d
-```
-
-## Data Preparation
-Since this project aims to enable simultaneous image acquisition and 3D Gaussian Splatting (3DGS) training, we need to utilize the [On-The-Fly SfM](https://sygant.github.io/onthefly/) system proposed by Zhan et al. This system has already achieved the capability of near real-time image acquisition and camera pose estimation. In this project, we will leverage the camera poses and sparse point clouds provided by this system as the input for subsequent 3DGS training.
-
-You can use your own data or the test data provided by us (demo_data/data1 and On-The-Fly/data1) to perform processing with the On-The-Fly SfM system. You can download our data [here](https://drive.google.com/drive/folders/1X3KiQR_bva6nUXQEznZqgHbkam91kCVB?usp=drive_link) and place all the data into the folder with the same name in this project directory. Next, please configure the parameters ```DatasetName```, ```SourceImageDataset```, and ```On_The_Fly_Dataset``` in the ```DatasetPrepare.py``` to the corresponding dataset names or paths. For example, if you intend to use the dataset provided by us directly, please set them as follows:
+If you are configuring the Python environment for **A-TDOM** on **Windows**,
+please **do not use** `environment.yml`. Instead, set up the environment using the following commands:
 
 ```shell
-DatasetName = ['data1']
-SourceImageDataset = r".../demo_data"
-On_The_Fly_Dataset = r".../On-The-Fly" # where you save On-The-Fly SfM Results
+conda create -n ATDOM python=3.9.0
+conda install cudatoolkit=11.6 -c conda-forge
+conda install pytorch=1.12.1 torchvision=0.13.1 torchaudio=0.12.1 -c pytorch
+
+pip install plyfile
+pip install tqdm
+pip install opencv-python
+pip install lpips
+pip install scikit-image
+
+pip install submodules/diff-gaussian-rasterization
+pip install submodules/simple-knn
+pip install submodules/fused-ssim
 ```
 
-And then you have to run ```DatasetPrepare.py```:
+Since **PyTorch3D** does not provide precompiled binaries for **Windows**, you need to manually download and build it from source.
+Please refer to the official repository: [PyTorch3D GitHub](https://github.com/facebookresearch/pytorch3d).
+When compiling **PyTorch3D**, please pay close attention to the compatibility between
+**CUB**, **PyTorch3D**, and the version of **Visual Studio**. In this project, we use **PyTorch3D v0.7.1** together with **CUB v1.15.0**,
+and **Visual Studio 2019 or 2022** is recommended.
 
-```shell
-python DatasetPrepare.py
-```
+# Windows Run
 
-This will produce results as illustrated below:
+When running on **Windows**, we provide visualization support for **TDOM generation**,
+allowing the results of **orthographic splatting** from the current 3DGS field to be displayed during 3DGS progressive training.
+In addition, **A-TDOM** can be executed concurrently with **On-the-Fly SfM**
+to achieve true *simultaneous camera pose acquisition, 3DGS training, and TDOM generation*.
+Alternatively, **A-TDOM** can also be run after **On-the-Fly SfM** has finished
+exporting all intermediate results, enabling **simulation experiments**.
+
+In this project, we provide executable versions of **On-the-Fly SfM**,
+which are stored in the corresponding folder with the same name.
+If you would like to learn how to export the intermediate results, please refer to [Data Preparation](#data-preparation).
+
+## Run A-TDOM Concurrently With On-the-Fly SfM
+
+如果您希望run A-TDOM concurrently with On-the-Fly SfM，
+
+## Simulation Experiments
+
+`Simulation Experiments` require running **On-the-Fly SfM** in advance to generate and export the intermediate results.
+If the intermediate results generated by **On-the-Fly SfM** are stored in `Source_Path_Dir`,
+and the image data are stored in `Image_Folder_Path`,
+your directory structure should be organized as follows:
 
 *****************************************
 
-.../On-The-Fly/data1  
-=>16  
-||===>images  
-||===||===>10002.jpg  
-||===||===>10005.jpg  
-||===||===>......  
-||===>sparse  
-||===||===>0  
-||=========||===>cameras.bin  
-||=========||===>imageMatchMatrix.txt  
-||=========||===>images.bin  
-||=========||===>imagesNames.txt  
-||=========||===>points3D.bin  
-=>17  
-||===>images  
-||===||===>10002.jpg  
-||===||===>10005.jpg  
-||===||===>......  
-||===>sparse  
-||===||===>0   
-||=========||===>cameras.bin  
-||=========||===>imageMatchMatrix.txt  
-||=========||===>images.bin  
-||=========||===>imagesNames.txt  
-||=========||===>points3D.bin  
-=>18  
-||  ......  
-=>19  
-||  ......  
-=>20  
-||  ......  
-=>21  
-||  ......  
+.../Image_Folder_Path\
+=> 0001.jpg, 0002.jpg, 0003.jpg, ...
 
-......
+.../Source_Path_Dir\
+=> GaussianSplatting\
+==> 3\
+===> bin, ...\
+==> 4\
+===> bin, ...\
+...
 
 *****************************************
 
-## 3DGS Train
-
-```Source_Path_Dir``` should specify the directory that contains all image data, camera pose information, and sparse point cloud. ```Model_Path_Dir``` should specify the output directory for the 3DGS results. The output frequency of 3DGS can be configured by using different command-line arguments.
+If you would like to output the results of **3DGS training** to `Model_Path_Dir`, 
+please run the following command to perform 3DGS training:
 
 ```shell
-python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Model_Path_Dir .../OutputDir --FinalOptimizationIterations 4000 --StartFromImageNo 30 --OriginImageHeight 1080 --OriginImageWidth 1920 --points_per_triangle 30 --Use_Tri_Mask
+python Window-On-the-Fly-Train.py 
+  --Source_Path_Dir .../your_path 
+  --Model_Path_Dir .../your_path 
+  --Image_Folder_Path .../your_path 
+  --OriginImageHeight [int] 
+  --OriginImageWidth [int] 
+  --points_per_triangle [int] 
+  --LogMaskThreshold [float] 
+  --Use_Tri_Mask
+```
+
+If you would like to generate **TDOM** simultaneously during training,
+please run the following command:
+
+```shell
+python Window-On-the-Fly-Train.py 
+  --Source_Path_Dir .../your_path 
+  --Model_Path_Dir .../your_path 
+  --Image_Folder_Path .../your_path 
+  --OriginImageHeight [int] 
+  --OriginImageWidth [int] 
+  --points_per_triangle [int] 
+  --LogMaskThreshold [float] 
+  --show_TDOM
+  --Use_Tri_Mask
+  --render_TDOM 
+  --GSD_x [float] 
+  --GSD_y [float]
 ```
 
 <details>
-<summary><span style="font-weight: bold;">Necessary command Line Arguments for ContinuosProgressiveTrain.py</span></summary>
+<summary><span style="font-weight: bold;">Necessary command Line Arguments for ContinuosProgressiveTrain4.py</span></summary>
 
   #### --Source_Path_Dir {str}
   Path to the source directory containing all image data, camera pose information, and sparse point cloud.
@@ -114,32 +150,164 @@ python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Mo
   The original image width input into On-Fly SfM.
   #### --points_per_triangle {int}
   The number of points collected in each triangle when conducting point sampling based on the Delunay triangulation.
-  #### --ProgressiveModelOutput
-  Save gaussians before a new image is acquired.
-
-</details>
-
-<details>
-<summary><span style="font-weight: bold;">Optional command Line Arguments for ContinuosProgressiveTrain.py</span></summary>
-
-  #### --GetDemo
-  If you want to obtain a Demo about progressive training, use this command.
-  #### --render_TDOM 
-  If you want to obtain the TDOM each time you add a new image, use this command.
-  #### --TDOM_FoVx {float}
-  Control the field of view during TDOM generation, with a value not exceeding 3.14.
-  #### --render_target
-  If you want to render a specific view after each acquisition of a new image, use this command.
+  #### --LogMaskThreshHold {float}
+  Gradient difference threshold used to determine whether new Gaussians should be added. A larger value results in fewer Gaussians being added, while a smaller value leads to more.
+  #### --show_TDOM
+  When enabled, the generated **TDOM** is continuously visualized during progressive 3DGS training.
   #### --NoDebug
-  If you wish to only train the model without performing any other operations, use this instruction.
+  When enabled, rendering quality evaluation is disabled during progressive 3DGS training.
+  #### --render_RGB
+  When enabled, the newly added image is rendered after completing the training stage for each new image.
+  #### --render_TDOM
+  When enabled, orthogonal splatting is performed on the current 3DGS field after each training stage, and a TDOM is generated.
+  #### --GetDemo
+  When enabled, a demo is generated based on the rendered results during training. This option must be used together with `--render_RGB` or `--render_TDOM`.
+  #### --GSD_x {float}
+  GSD of the generated TDOM along the Y-axis.
+  #### --GSD_y {float}
+  GSD of the generated TDOM along the Y-axis.
 
 </details>
 
-## TDOM Generation
+## Example
 
-If you want to generate TDOM while training 3DGS field, please use 2 commonds: ```--render_TDOM``` and ```--TDOM_FoVx``` from ```Optional command Line Arguments for ContinuosProgressiveTrain.py```. Meanwhile, please modify the parameters T and R in ContinuosProgressiveTrain4.py => GaussianTrainer class => render_TDOM function. Here, T represents the 3D coordinates of the camera, R represents the camera's rotation matrix, and ```--TDOM_FoVx``` specifies the camera's field of view. If you wish to generate the TDOM for the entire scene, it is recommended to select a camera located near the center of the scene and to increase the field of view.
+
+
+# Linux Env Setting
+
+If you are configuring the Python environment for **A-TDOM** on **Linux**,
+please use the following command directly:
 
 ```shell
-python ContinuosProgressiveTrain4.py --Source_Path_Dir .../On-The-Fly/data1 --Model_Path_Dir .../OutputDir --FinalOptimizationIterations 4000 --StartFromImageNo 30 --OriginImageHeight 1080 --OriginImageWidth 1920 --points_per_triangle 30 --Use_Tri_Mask --render_TDOM --GSD_x 0.15 --GSD_y 0.15
+# Env
+cd .../A-TDOM
+conda env create --file environment.yml
+conda activate ATDOM
 
+pip install pytorch3d
+pip install opencv-python
+pip install lpips
+pip install scikit-image
 ```
+
+# Linux Run
+
+Since **On-the-Fly SfM** is not currently available on **Linux**, 
+running **A-TDOM** on Linux requires first executing **On-the-Fly SfM** on **Windows** and saving the intermediate results.
+These results should then be transferred to the Linux environment to proceed with subsequent **3DGS training** and **TDOM generation**.
+
+In this project, we provide executable versions of **On-the-Fly SfM**,
+which are stored in the corresponding folder with the same name.
+If you would like to learn how to export the intermediate results, please refer to [Data Preparation](#data-preparation).
+
+If the intermediate results generated by **On-the-Fly SfM** are stored in `Source_Path_Dir`,
+and the image data are stored in `Image_Folder_Path`,
+your directory structure should be organized as follows:
+
+*****************************************
+
+.../Image_Folder_Path\
+=> 0001.jpg, 0002.jpg, 0003.jpg, ...
+
+.../Source_Path_Dir\
+=> GaussianSplatting\
+==> 3\
+===> bin, ...\
+==> 4\
+===> bin, ...\
+...
+
+*****************************************
+
+If you would like to output the results of **3DGS training** to `Model_Path_Dir`, 
+please run the following command to perform 3DGS training:
+
+```shell
+python ContinuosProgressiveTrain4.py 
+  --Source_Path_Dir .../your_path 
+  --Model_Path_Dir .../your_path 
+  --Image_Folder_Path .../your_path 
+  --OriginImageHeight [int] 
+  --OriginImageWidth [int] 
+  --points_per_triangle [int] 
+  --LogMaskThreshold [float] 
+  --Use_Tri_Mask
+```
+
+If you would like to generate **TDOM** simultaneously during training,
+please run the following command:
+
+```shell
+python ContinuosProgressiveTrain4.py 
+  --Source_Path_Dir .../your_path 
+  --Model_Path_Dir .../your_path 
+  --Image_Folder_Path .../your_path 
+  --OriginImageHeight [int] 
+  --OriginImageWidth [int] 
+  --points_per_triangle [int] 
+  --LogMaskThreshold [float] 
+  --Use_Tri_Mask
+  --render_TDOM 
+  --GSD_x [float] 
+  --GSD_y [float]
+```
+
+<details>
+<summary><span style="font-weight: bold;">Necessary command Line Arguments for ContinuosProgressiveTrain4.py</span></summary>
+
+  #### --Source_Path_Dir {str}
+  Path to the source directory containing all image data, camera pose information, and sparse point cloud.
+  #### --Model_Path_Dir {str}
+  Path where the trained model should be stored.
+  #### --IterationFirstScene {int}
+  Training iterations for initial training phase.
+  #### --FinalOptimizationIterations {int}
+  Training iterations for final refinement phase.
+  #### --StartFromImageNo {int}
+  It indicates from which image the progressive training begins. This image and all the images before it are used for scene initialization.
+  #### --OriginImageHeight {int}
+  The original image height input into On-Fly SfM.
+  #### --OriginImageWidth {int}
+  The original image width input into On-Fly SfM.
+  #### --points_per_triangle {int}
+  The number of points collected in each triangle when conducting point sampling based on the Delunay triangulation.
+  #### --LogMaskThreshHold {float}
+  Gradient difference threshold used to determine whether new Gaussians should be added. A larger value results in fewer Gaussians being added, while a smaller value leads to more.
+  #### --NoDebug
+  When enabled, rendering quality evaluation is disabled during progressive 3DGS training.
+  #### --render_RGB
+  When enabled, the newly added image is rendered after completing the training stage for each new image.
+  #### --render_TDOM
+  When enabled, orthogonal splatting is performed on the current 3DGS field after each training stage, and a TDOM is generated.
+  #### --GetDemo
+  When enabled, a demo is generated based on the rendered results during training. This option must be used together with `--render_RGB` or `--render_TDOM`.
+  #### --GSD_x {float}
+  GSD of the generated TDOM along the Y-axis.
+  #### --GSD_y {float}
+  GSD of the generated TDOM along the Y-axis.
+
+</details>
+
+## Example
+
+We use the **phantom3-ieu** dataset
+(you can download it [here](https://www.adv-ci.com/blog/source/npu-drone-map-dataset/))
+as an example. The following command demonstrates how to perform 3DGS training
+with simultaneous TDOM generation:
+
+```shell
+python ContinuosProgressiveTrain4.py 
+  --Source_Path_Dir .../phantom3-ieu 
+  --Model_Path_Dir .../phantom3-ieu 
+  --Image_Folder_Path .../images 
+  --OriginImageHeight 1049 
+  --OriginImageWidth 1870 
+  --points_per_triangle 30 
+  --LogMaskThreshold 0.15 
+  --Use_Tri_Mask 
+  --render_TDOM 
+  --GSD_x [float] 
+  --GSD_y [float]
+```
+
+# Data Preparation

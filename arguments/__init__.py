@@ -161,6 +161,8 @@ class OptimizationParams(ParamGroup):
         self.OriginImageWidth = 0
         self.LogMaskThreshold = 0.1
         self.TDOM_FoVx = 3.0
+        self.GSD_x = 0.00
+        self.GSD_y = 0.00
 
         super().__init__(parser, "Optimization Parameters")
 

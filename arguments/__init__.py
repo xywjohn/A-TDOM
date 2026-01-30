@@ -134,7 +134,7 @@ class OptimizationParams(ParamGroup):
         self.random_background = False
         self.optimizer_type = "default"
 
-        self.StartFromImageNo = 16
+        self.StartFromImageNo = 30
         self.EndAtImageNo = -1
         self.ContinueFromImageNo = -1
         self.ImagesNumLimitation = -1
@@ -147,7 +147,7 @@ class OptimizationParams(ParamGroup):
         self.Image_Folder_Path = ""
         self.IterationFirstScene = 2000
         self.IterationPerMergeScene = 100
-        self.FinalOptimizationIterations = 2000
+        self.FinalOptimizationIterations = 4000
         self.MergeScene_Densification_Interval = 100
         self.MergeScene_Densify_Grad_Threshold = 0.0002
         self.GaussiansNumMax = 1000000

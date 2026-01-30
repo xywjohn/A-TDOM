@@ -863,7 +863,7 @@ def On_the_Fly_readColmapSceneInfo(path, images, eval, CurrentImagesNames, llffh
                            ply_path=ply_path)
     return scene_info
 
-def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_Name="", CurrentImagesNames=[], Do_Get_Tri_Mask=False, Diary=None, Silence=False, No_Key_Region=False, NewInputFormat=False):
+def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_Name="", CurrentImagesNames=[], Do_Get_Tri_Mask=False, Diary=None, Silence=False, No_Key_Region=False, NewInputFormat=False, Image_Folder_Path=""):
     time1 = time.time()
     if not NewInputFormat:
         try:
@@ -892,6 +892,8 @@ def SingleImage_readColmapSceneInfo_Part1(path, images, eval, llffhold=8, Image_
     image_folder_path = os.path.join(os.path.dirname(path), reading_dir)
     if not os.path.exists(image_folder_path):
         image_folder_path = os.path.join(path, reading_dir)
+    if Image_Folder_Path != "":
+        image_folder_path = Image_Folder_Path
     cam_infos_unsorted, point3D_ids_list, xys_list, tri_list = SingleImage_readColmapCameras(cam_extrinsics=cam_extrinsics,
                                                                               cam_intrinsics=cam_intrinsics,
                                                                               images_folder=image_folder_path,
@@ -1209,7 +1211,7 @@ def SingleImage_readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True
                            ply_path=ply_path)
     return scene_info
 
-def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri_Mask=False, No_Key_Region=False, NewInputFormat=False):
+def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri_Mask=False, No_Key_Region=False, NewInputFormat=False, Image_Folder_Path=""):
     if not NewInputFormat:
         try:
             cameras_extrinsic_file = os.path.join(path, "sparse/0", "images.bin")
@@ -1231,6 +1233,8 @@ def readColmapSceneInfo(path, images, eval, llffhold=8, get_ply=True, Do_Get_Tri
     image_folder_path = os.path.join(os.path.dirname(path), reading_dir)
     if not os.path.exists(image_folder_path):
         image_folder_path = os.path.join(path, reading_dir)
+    if Image_Folder_Path != "":
+        image_folder_path = Image_Folder_Path
     cam_infos_unsorted = readColmapCameras(cam_extrinsics=cam_extrinsics, cam_intrinsics=cam_intrinsics, images_folder=image_folder_path, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region)
     cam_infos = sorted(cam_infos_unsorted.copy(), key = lambda x : x.image_name)
 

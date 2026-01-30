@@ -49,11 +49,11 @@ class Scene:
         self.test_cameras = {}
 
         if os.path.exists(os.path.join(args.source_path, "sparse")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region)
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region, Image_Folder_Path=args.Image_Folder_Path)
             self.scene_info = scene_info
             self.scene_info_traincam = scene_info.train_cameras
         elif os.path.exists(os.path.join(args.source_path, "bin")):
-            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region, NewInputFormat=True)
+            scene_info = sceneLoadTypeCallbacks["Colmap"](args.source_path, args.images, args.eval, Do_Get_Tri_Mask=Do_Get_Tri_Mask, No_Key_Region=No_Key_Region, NewInputFormat=True, Image_Folder_Path=args.Image_Folder_Path)
             self.scene_info = scene_info
             self.scene_info_traincam = scene_info.train_cameras
         elif os.path.exists(os.path.join(args.source_path, "transforms_train.json")):

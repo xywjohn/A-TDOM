@@ -2,6 +2,8 @@
 # A-TDOM: Active TDOM via On-the-Fly 3DGS
 Yiwei Xu, Xiang Wang, Yifei Yu, Wentian Gan, Luca Morelli, Giulio Perda, Xiongwu Xiao, Zongqian Zhan, Xin Wang, and Fabio Remondino
 
+[![arxiv](https://img.shields.io/badge/arxiv-2406.15643-red)](https://arxiv.org/abs/2509.12759)
+
 ![image](0.png)
 
 # Important Notice (Please Read before Start!!!)

@@ -40,6 +40,7 @@ please **do not use** `environment.yml`. Instead, set up the environment using t
 
 ```shell
 conda create -n ATDOM python=3.9.0
+conda activate ATDOM
 conda install cudatoolkit=11.6 -c conda-forge
 conda install pytorch=1.12.1 torchvision=0.13.1 torchaudio=0.12.1 -c pytorch
 
@@ -59,6 +60,19 @@ Please refer to the official repository: [PyTorch3D GitHub](https://github.com/f
 When compiling **PyTorch3D**, please pay close attention to the compatibility between
 **CUB**, **PyTorch3D**, and the version of **Visual Studio**. In this project, we use **PyTorch3D v0.7.1** together with **CUB v1.15.0**,
 and **Visual Studio 2019 or 2022** is recommended.
+
+Please ensure that all prerequisites required to build **PyTorch3D** are properly installed,
+including compatible versions of **CUB** and **Visual Studio**,
+and that you have downloaded the correct version of the **PyTorch3D** source code.
+
+Then, open either `x64 Native Tools Command Prompt for VS 2019` or `x64 Native Tools Command Prompt for VS 2022`,
+and run the following commands:
+
+```shell
+conda activate ATDOM
+cd ...\pytorch3d-0.7.1
+python setup.py install
+```
 
 # Windows Run
 

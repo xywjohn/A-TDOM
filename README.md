@@ -390,7 +390,7 @@ for each rendering based on the current scene scale.
 
 # Data Preparation
 
-
+**Coming Soon...**
 
 # BibTex
 
@@ -401,4 +401,5 @@ for each rendering based on the current scene scale.
   journal={arXiv preprint arXiv:2509.12759},
   year={2025}
 }
+
 ```

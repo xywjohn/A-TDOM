@@ -409,15 +409,15 @@ All of these paths should point to other folders located in the **same directory
 [Python]
 # Python 虚拟环境目录
 # Python virtual environment directory
-PythonHome = ...\On_the_fly_SfME\On-the-FlyGS\Python
+PythonHome = ...\On-the-FlyGS\Python
 
 # Python 脚本工作目录
 # Working directory for Python scripts
-PythonWorkspace = ...\On_the_fly_SfME\On-the-FlyGS\pyscripts
+PythonWorkspace = ...\On-the-FlyGS\pyscripts
 
 # 全局特征模型路径
 # Path to the global feature model
-GlobalFeatureModel = ...\On_the_fly_SfME\On-the-FlyGS\pyscripts
+GlobalFeatureModel = ...\On-the-FlyGS\pyscripts
 ```
 
 Then, locate and run On-the-FlySfM.exe in the bin folder. After the interface opens, 

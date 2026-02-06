@@ -18,6 +18,9 @@ please refer to [Windows Env Setting](#windows-env-setting) and [Windows Run](#w
 If you intend to run the project on **Linux** and only perform `Simulation Experiments`,
 please refer to [Linux Env Setting](#linux-env-setting) and [Linux Run](#linux-run).
 
+We also provide a video demonstrating how to use On-the-Fly SfM and A-TDOM, you can download it from 
+[here](https://drive.google.com/drive/folders/1h322jgzVjQypALrArmYabavg2_NjR3Wl?hl=zh-cn).
+
 # Cloning the Repository
 
 ```shell
@@ -449,6 +452,8 @@ Images = ...\dataset\scene1\images             # Same as --Image_Folder_Path
 Now, please start On-the-Fly SfM. If you want to run A-TDOM Concurrently With On-the-Fly SfM, please proceed to [Before Run A-TDOM Concurrently With On-the-Fly SfM](#before-run-a-tdom-concurrently-with-on-the-fly-sfm) + [3DGS Training and TDOM Generation On Windows](#3dgs-training-and-tdom-generation-on-windows) to continue with the next steps.
 
 If you intend to conduct **simulation experiments**, please wait until On-the-Fly SfM has **completed full point cloud generation and camera pose estimation**, and proceed to [Before Simulation Experiments On Windows](#before-simulation-experiments-on-windows) + [3DGS Training and TDOM Generation On Windows](#3dgs-training-and-tdom-generation-on-windows) or [Before Run On Linux](#before-run-on-linux) + [3DGS Training and TDOM Generation On Linux](#3dgs-training-and-tdom-generation-on-linux) to continue with the next steps.
+
+When you need to close On-the-FlySfM.exe, it is recommended to use Taskmgr.exe to completely close it to prevent some threads from continuing to run in the background.
 
 # BibTex
 

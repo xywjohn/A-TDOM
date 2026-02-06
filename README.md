@@ -18,7 +18,7 @@ please refer to [Windows Env Setting](#windows-env-setting) and [Windows Run](#w
 If you intend to run the project on **Linux** and only perform `Simulation Experiments`,
 please refer to [Linux Env Setting](#linux-env-setting) and [Linux Run](#linux-run).
 
-We also provide a video demonstrating how to use On-the-Fly SfM and A-TDOM, you can download it from 
+We also provide a **video demonstrating how to use On-the-Fly SfM and A-TDOM**, you can download it from 
 [here](https://drive.google.com/drive/folders/1h322jgzVjQypALrArmYabavg2_NjR3Wl?hl=zh-cn).
 
 # Cloning the Repository
@@ -464,4 +464,5 @@ When you need to close On-the-FlySfM.exe, it is recommended to use Taskmgr.exe t
   journal={arXiv preprint arXiv:2509.12759},
   year={2025}
 }
+
 ```

@@ -108,8 +108,6 @@ def GetArgs():
 
     # 输出存储训练后模型的存储位置
     print("Optimizing " + args.Source_Path_Dir)
-    if os.path.exists(os.path.join(args.Source_Path_Dir, "GaussianSplatting")):
-        args.Source_Path_Dir = os.path.join(args.Source_Path_Dir, "GaussianSplatting")
 
     return args, lp, op, pp
 
@@ -421,42 +419,36 @@ def expand_image_gray(img_path, save_path, width0, height0, gray_value=128):
 
     # print(f"Saved expanded image to {save_path}")
 
-# 前端，第一个线程，主要用于读取数据以及一些数据预处理
-class DataPreProccesser(mp.Process):
+class ATDOM():
+
     # 构造函数
     def __init__(self):
         super().__init__()
 
+        ##################################################################################################
+
         self.Silence = True
 
-        # 用于两个进程之间的信息传递
-        self.DataPreProccesser_queue = None
-        self.GaussianTrainer_queue = None
+        # 在没有开始渐进式训练之前，新增影像数量不存在
+        self.NewImagesNum = -1
 
         # 获取参数配置器
         self.args, self.lp, self.op, self.pp = GetArgs()
 
-        # 用于统计峰值内存以及训练时间
-        self.Peak_Memory = 0
-        self.PhaseStartTime = None
-        self.PhaseEndTime = None
-
         # 训练开始前的准备工作
         self.TimeCost, self.Diary, self.EvaluateDiary, self.GaussianDiary, self.ImagesAlreadyBeTrainedIterations, self.source_path_list, self.model_path_list, self.IM = TrainingPreparation(self.args)
+        self.TimeCost = {"GaussianInitial": 0.0, "ProgressiveTrain": 0.0, "FinalRefinement": 0.0}
 
-        # 用于在渐进式训练时记录此次加入的影像
-        self.NewCams = []
+        self.ResetOpacityTime = 0
 
         # 记录模型的已训练次数
         self.AlreadyTrainingIterations = 0
         self.StartFromTrainingIterations = 0
 
-        # 在没有开始渐进式训练之前，影像匹配矩阵和影像权重不存在
-        self.ImageMatchingMatrix = None
-        self.Images_Weights = None
+        self.Drone_Image_Block = False
+        self.Progressive_Training_Block = False
 
-        # 在没有开始渐进式训练之前，新增影像数量不存在
-        self.NewImagesNum = -1
+        self.resolution_scales = [1.0]
 
         # 该字典用于存储每一张影像对应的高斯球
         self.Image_Visibility = {}
@@ -466,31 +458,135 @@ class DataPreProccesser(mp.Process):
         # 若该列表不为空，则训练影像时只会从该列表中的影像来选取
         self.ChosenImageNames = []
 
-        self.targetcam = None
+        # TDOM的地面分辨率
+        self.GSD_x = self.args.GSD_x
+        self.GSD_y = self.args.GSD_y
+
+        self.NewCams = []
+
+        self.imagenum = self.args.StartFromImageNo
+
         self.TDOM_Cam = None
-        self.TDOM_pipeline = None
-        self.targetcam_savetimes = 0
-        self.TDOM_Cam_savetimes = 0
 
-        # 用于存储是否需要进行GS可见度重新设置
-        self.ResetOpacityTime = 0
+        self.Finish = False
 
-        # 用于标记是否需要进行分块训练
-        self.Drone_Image_Block = False
-        self.Progressive_Training_Block = False
+        ##################################################################################################
+        ##################################################################################################
 
-        # 表示当前模型被分为多少个部分进行了训练，初始为1，只有在内存不够时会创建新的块
-        self.BlockNum = 1
+        self.GTImageRootPath = self.args.Source_Path_Dir
+        self.GTImagePath = None
+        self.DataSaver_queue = None
+        self.SaveDirRootPath = os.path.join(self.args.Model_Path_Dir, "Intermediate_Results")
+        self.Intermediate_GT_Path = None
+        self.Intermediate_RGB_Render_Path = None
+        self.Intermediate_TDOM_Render_Path = None
+        self.Intermediate_TDOM_Gray_Render_Path = None
+        self.SaveGTNumber = 0
+        self.SaveImageNumber = 0
+        self.SaveTDOMNumber = 0
+        self.MaxTDOMWidth = 0
+        self.MaxTDOMHeight = 0
+        self.StartFromImageNo = self.args.StartFromImageNo
+        self.MakeDirs()
 
-        # 表示每一个块对应的pth文件被存储在了哪个位置
-        self.BlockDirPath = []
+    # 执行函数
+    def run(self, commond=""):
+        if commond == "init":
+            self.InitialGaussianTrain()
+        elif commond == "active":
+            StartFrom = 0 if self.args.ContinueFromImageNo == -1 else self.args.ContinueFromImageNo - self.args.StartFromImageNo
+            if StartFrom > len(self.source_path_list) - 2:
+                return 0
 
-        self.resolution_scales = [1.0]
+            ProgressiveTrainingTime = StartFrom
 
-        # 设置初始场景的文件路径
-        self.args.model_path = self.model_path_list[0] if self.args.ContinueFromImageNo == -1 else self.model_path_list[self.args.ContinueFromImageNo - self.args.StartFromImageNo]
-        self.args.source_path = self.source_path_list[0] if self.args.ContinueFromImageNo == -1 else self.source_path_list[self.args.ContinueFromImageNo - self.args.StartFromImageNo]
-        self.Diary.write(f"First scene source_path: {self.args.source_path}\nFirst scene model_path: {self.args.model_path}\n")
+            while True:
+                if (ProgressiveTrainingTime + self.args.StartFromImageNo + 1 <= self.args.EndAtImageNo or self.args.EndAtImageNo == -1) and (ProgressiveTrainingTime < len(self.source_path_list) - 2):
+                    # 数据更新同时计算这一次有多少新增影像
+                    self.NewImagesNum = self.IM[ProgressiveTrainingTime + 1] - self.IM[ProgressiveTrainingTime]
+                    self.args.source_path = self.source_path_list[ProgressiveTrainingTime]
+                    self.args.model_path = self.model_path_list[ProgressiveTrainingTime]
+                    self.args.source_path_second = self.source_path_list[ProgressiveTrainingTime + 1]
+                    self.args.model_path_second = self.model_path_list[ProgressiveTrainingTime + 1]
+
+                    # 根据新的稀疏点云来扩张高斯点云
+                    get_ply = True if ProgressiveTrainingTime == len(self.source_path_list) - 3 else False
+                    New_scene_info_traincam, NewCams, UpdatedTrainCamsPos, scene_info, new_model_path_second, cameras_extent = self.ExpandingGS_From_SparsePCD2(self.GetImagePos(), get_ply=get_ply)
+
+                    self.scene.scene_info_traincam = None
+                    self.NewCams = NewCams
+                    self.scene.cameras_extent = cameras_extent
+                    if not self.args.No_Sampling:
+                        self.gaussians.expand_from_pcd(scene_info.point_cloud, self.scene.cameras_extent)
+                    self.scene.basic_pcd = scene_info.point_cloud
+                    self.scene.model_path = new_model_path_second
+                    NewImagesNum = self.NewImagesNum
+
+                    self.imagenum += len(self.NewCams)
+                    print(f"-----------------------------This is {self.imagenum} image-----------------------------")
+
+                    # 更新位姿
+                    for i in range(len(self.scene.train_cameras[1.0])):
+                        image_name = self.scene.train_cameras[1.0][i].image_name
+                        self.scene.train_cameras[1.0][i].world_view_transform = UpdatedTrainCamsPos[image_name][
+                            0].cuda()
+                        self.scene.train_cameras[1.0][i].projection_matrix = UpdatedTrainCamsPos[image_name][1].cuda()
+                        self.scene.train_cameras[1.0][i].full_proj_transform = UpdatedTrainCamsPos[image_name][2].cuda()
+                        self.scene.train_cameras[1.0][i].camera_center = UpdatedTrainCamsPos[image_name][3].cuda()
+
+                    # 将新的影像加入
+                    for i in range(len(self.NewCams)):
+                        self.scene.train_cameras[1.0].append(self.NewCams[i])
+
+                    self.ImagesAlreadyBeTrainedIterations_Set()
+
+                    time1 = time.time()
+                    # 对扩张后的场景进行训练
+                    if not self.args.skip_MergeSceneTraining:
+                        self.Train_Gaussians(
+                            (self.args.IterationPerMergeScene + self.args.GlobalOptimizationIteration) * NewImagesNum, "On_The_Fly")
+                    time2 = time.time()
+                    self.TimeCost["ProgressiveTrain"] += time2 - time1
+
+                    ProgressiveTrainingTime += 1
+                else:
+                    break
+        elif commond == "over":
+            print("*****************************************************************************")
+            print("DataPreProccesser: Start Final Refinement...")
+            self.args.source_path = self.source_path_list[-2]
+            self.args.model_path = self.model_path_list[-2]
+            self.args.source_path_second = self.source_path_list[-1]
+            self.args.model_path_second = self.model_path_list[-1]
+            # self.scene.model_path = self.args.model_path_second
+            prepare_output_and_logger(self.args, True)
+            shutil.copy(os.path.join(self.args.model_path, "input.ply"), os.path.join(self.args.model_path_second, "input.ply"))
+            shutil.copy(os.path.join(self.args.model_path, "cameras.json"), os.path.join(self.args.model_path_second, "cameras.json"))
+
+            time1 = time.time()
+            self.scene.model_path = self.args.model_path_second
+            if not self.args.skip_GlobalOptimization:
+                self.Train_Gaussians(self.args.FinalOptimizationIterations, "Final_Refinement")
+
+            time2 = time.time()
+            self.TimeCost["FinalRefinement"] += time2 - time1
+
+            self.SaveTimeCost(self.TimeCost, self.imagenum)
+
+            with torch.no_grad():
+                self.GS_Save(True)
+                self.Evaluate("Final_Refinement", True)
+
+            if self.SaveImageNumber > 0:
+                self.GetRGBDemo()
+            if self.SaveTDOMNumber > 0:
+                self.GetTDOMDemo()
+
+            self.Render_Evaluate_All_Images()
+
+            self.EvaluateDiary.close()
+
+    '''DataPreProccesser'''
 
     # 为某一部分影像创建梯度图
     def GetGradLogForCams(self, cams=[], save=False):
@@ -512,13 +608,23 @@ class DataPreProccesser(mp.Process):
     def GetGradLogForImage(self, image, image_name, MG, save=False):
         return Get_LogImage(image, image_name, os.path.join(self.args.Model_Path_Dir, "GradLogRender"), MaxGradLog=MG, save=save)
 
+    # 将现有影像的位姿信息传给前端
+    def GetImagePos(self):
+        TrainCamsDict = {}
+        for cam in self.scene.getTrainCameras():
+            TrainCamsDict[cam.image_name] = {"trans": cam.trans,
+                                             "scale": cam.scale,
+                                             "znear": cam.znear,
+                                             "zfar": cam.zfar,
+                                             "FoVx": cam.FoVx,
+                                             "FoVy": cam.FoVy}
+        return TrainCamsDict
+
     # 根据新的稀疏点云来扩张高斯点云
     def ExpandingGS_From_SparsePCD2(self, TrainCameras, get_ply=False):
         if os.path.exists(os.path.join(self.args.source_path_second, "sparse")):
-            NewInputFormat = False
             CurrentImagesNames = list(TrainCameras.keys())
-            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list = \
-            sceneLoadTypeCallbacks[
+            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list = sceneLoadTypeCallbacks[
                 "Single_Image1"](
                 self.args.source_path_second,
                 self.args.images, self.args.eval,
@@ -527,25 +633,7 @@ class DataPreProccesser(mp.Process):
                 CurrentImagesNames=CurrentImagesNames,
                 Diary=self.Diary,
                 Silence=self.Silence,
-                No_Key_Region=self.args.No_Key,
-                NewInputFormat=NewInputFormat,
-                Image_Folder_Path=self.args.Image_Folder_Path)
-        elif os.path.exists(os.path.join(self.args.source_path_second, "bin")):
-            NewInputFormat = True
-            CurrentImagesNames = list(TrainCameras.keys())
-            train_cam_infos, test_cam_infos, nerf_normalization, point3D_ids_list, xys_list, tri_list = \
-            sceneLoadTypeCallbacks[
-                "Single_Image1"](
-                self.args.source_path_second,
-                self.args.images, self.args.eval,
-                Do_Get_Tri_Mask=self.args.Use_Tri_Mask,
-                Image_Name="",
-                CurrentImagesNames=CurrentImagesNames,
-                Diary=self.Diary,
-                Silence=self.Silence,
-                No_Key_Region=self.args.No_Key,
-                NewInputFormat=NewInputFormat,
-                Image_Folder_Path=self.args.Image_Folder_Path)
+                No_Key_Region=self.args.No_Key)
         else:
             assert False, "Could not recognize scene type!"
 
@@ -591,7 +679,7 @@ class DataPreProccesser(mp.Process):
                                                              self.args.OriginImageHeight, self.args.OriginImageWidth,
                                                              get_ply=get_ply,
                                                              points_per_triangle=self.args.points_per_triangle,
-                                                             device="cuda", Diary=self.Diary, Silence=self.Silence, NewInputFormat=NewInputFormat)
+                                                             device="cuda", Diary=self.Diary, Silence=self.Silence)
 
         time1 = time.time()
         if scene_info.ply_path is not None:
@@ -732,17 +820,8 @@ class DataPreProccesser(mp.Process):
                 self.GetGradLogForCams([NewCam])
 
                 with torch.no_grad():
-                    # render_pkg = render(NewCam, self.gaussians, self.args, self.bg, Render_Mask=NewCam.Tri_Mask)
-                    # image = render_pkg["render"]
-
-                    # 像后端发送指令，令其渲染一张当前新影像
-                    msg = ["Render_New", NewCam]
-                    self.GaussianTrainer_queue.put(msg)
-
-                    while True:
-                        if not self.DataPreProccesser_queue.empty():
-                            image = self.DataPreProccesser_queue.get()[0]
-                            break
+                    render_pkg = render(NewCam, self.gaussians, self.args, self.bg, Render_Mask=NewCam.Tri_Mask)
+                    image = render_pkg["render"]
 
                     renderGradLog, _ = self.GetGradLogForImage(image, NewCam.image_name, NewCam.MaxGradLog)
 
@@ -757,9 +836,6 @@ class DataPreProccesser(mp.Process):
                 if self.args.Block or self.ChosenImageNames != []:
                     self.ChosenImageNames.append(NewCam.image_name)
 
-            msg = ["RenderNewDone"]
-            self.GaussianTrainer_queue.put(msg)
-
             # self.scene.scene_info_traincam = train_cam_infos
             New_scene_info_traincam = train_cam_infos
 
@@ -769,163 +845,7 @@ class DataPreProccesser(mp.Process):
 
             return New_scene_info_traincam, NewCams, UpdatedTrainCamsPos
 
-    # 该函数将被送入到一个线程中，用于渐进式训练中的数据读取以及预处理
-    def run(self):
-        self.GaussianTrainer_queue.put(["init"])
-
-        StartFrom = 0 if self.args.ContinueFromImageNo == -1 else self.args.ContinueFromImageNo - self.args.StartFromImageNo
-        if StartFrom > len(self.source_path_list) - 2:
-            return 0
-
-        ProgressiveTrainingTime = StartFrom
-        while True:
-            # 在后端没有发送任何指令之前，不做任何行为
-            if self.DataPreProccesser_queue.empty():
-                continue
-            else:
-                Commond_from_GaussianTrainer = self.DataPreProccesser_queue.get()
-                if Commond_from_GaussianTrainer[0] == "Progressive_First_Step":
-                    if ProgressiveTrainingTime + self.args.StartFromImageNo + 1 <= self.args.EndAtImageNo or self.args.EndAtImageNo == -1:
-                        # 数据更新同时计算这一次有多少新增影像
-                        self.NewImagesNum = self.IM[ProgressiveTrainingTime + 1] - self.IM[ProgressiveTrainingTime]
-                        self.args.source_path = self.source_path_list[ProgressiveTrainingTime]
-                        self.args.model_path = self.model_path_list[ProgressiveTrainingTime]
-                        self.args.source_path_second = self.source_path_list[ProgressiveTrainingTime + 1]
-                        self.args.model_path_second = self.model_path_list[ProgressiveTrainingTime + 1]
-
-                        # 根据新的稀疏点云来扩张高斯点云
-                        get_ply = True if ProgressiveTrainingTime == len(self.source_path_list) - 3 else False
-                        # self.NewCams = self.ExpandingGS_From_SparsePCD(get_ply=get_ply)
-                        New_scene_info_traincam, NewCams, UpdatedTrainCamsPos, scene_info, new_model_path_second, cameras_extent = self.ExpandingGS_From_SparsePCD2(Commond_from_GaussianTrainer[1], get_ply=get_ply)
-                        # print(f"ChosenImagesNum: {len(self.ChosenImageNames)}")
-
-                        names = list(UpdatedTrainCamsPos.keys())
-                        worlds = torch.stack([UpdatedTrainCamsPos[n][0] for n in names])  # (N,4,4)
-                        projs = torch.stack([UpdatedTrainCamsPos[n][1] for n in names])  # (N,4,4)
-                        fulls = torch.stack([UpdatedTrainCamsPos[n][2] for n in names])  # (N,4,4)
-                        centers = torch.stack([UpdatedTrainCamsPos[n][3] for n in names])  # (N,3)
-
-                        # 像后端发送指令和数据，开始对新进影像的训练
-                        print("DataPreProccesser: Send Information to GaussianTrainer...")
-                        # msg = ["Progressive_Train", New_scene_info_traincam, NewCams, TrainCameras, scene_info, new_model_path_second, cameras_extent, self.NewImagesNum]
-                        msg = ["Progressive_Train", None, NewCams, [worlds, projs, fulls, centers, names], scene_info.point_cloud, new_model_path_second, cameras_extent, self.NewImagesNum]
-                        self.GaussianTrainer_queue.put(msg)
-
-                        ProgressiveTrainingTime += 1
-                elif Commond_from_GaussianTrainer[0] == "Progressive":
-                    if (ProgressiveTrainingTime + self.args.StartFromImageNo + 1 <= self.args.EndAtImageNo or self.args.EndAtImageNo == -1) and (ProgressiveTrainingTime < len(self.source_path_list) - 2):
-                        # 数据更新同时计算这一次有多少新增影像
-                        self.NewImagesNum = self.IM[ProgressiveTrainingTime + 1] - self.IM[ProgressiveTrainingTime]
-                        self.args.source_path = self.source_path_list[ProgressiveTrainingTime]
-                        self.args.model_path = self.model_path_list[ProgressiveTrainingTime]
-                        self.args.source_path_second = self.source_path_list[ProgressiveTrainingTime + 1]
-                        self.args.model_path_second = self.model_path_list[ProgressiveTrainingTime + 1]
-
-                        # 根据新的稀疏点云来扩张高斯点云
-                        get_ply = True if ProgressiveTrainingTime == len(self.source_path_list) - 3 else False
-                        # self.NewCams = self.ExpandingGS_From_SparsePCD(get_ply=get_ply)
-                        New_scene_info_traincam, NewCams, UpdatedTrainCamsPos, scene_info, new_model_path_second, cameras_extent = self.ExpandingGS_From_SparsePCD2(Commond_from_GaussianTrainer[1], get_ply=get_ply)
-                        # print(f"ChosenImagesNum: {len(self.ChosenImageNames)}")
-
-                        names = list(UpdatedTrainCamsPos.keys())
-                        worlds = torch.stack([UpdatedTrainCamsPos[n][0] for n in names])  # (N,4,4)
-                        projs = torch.stack([UpdatedTrainCamsPos[n][1] for n in names])  # (N,4,4)
-                        fulls = torch.stack([UpdatedTrainCamsPos[n][2] for n in names])  # (N,4,4)
-                        centers = torch.stack([UpdatedTrainCamsPos[n][3] for n in names])  # (N,3)
-
-                        # 像后端发送指令和数据，开始对新进影像的训练，此时，需要注意先等后端把上一张影像完成训练之后，再进行传输
-                        while True:
-                            if not self.DataPreProccesser_queue.empty():
-                                if self.DataPreProccesser_queue.get()[0] == "Progressive_finish":
-                                    # 像后端发送指令和数据，开始对新进影像的训练
-                                    print("DataPreProccesser: Send Information to GaussianTrainer...")
-                                    msg = ["Progressive_Train", None, NewCams, [worlds, projs, fulls, centers, names], scene_info.point_cloud, new_model_path_second, cameras_extent, self.NewImagesNum]
-                                    # msg = ["Progressive_Train"]
-                                    self.GaussianTrainer_queue.put(msg)
-                                break
-
-                        ProgressiveTrainingTime += 1
-                    else:
-                        msg = ["Final_Refinement_Prepare"]
-                        self.GaussianTrainer_queue.put(msg)
-
-                        # 像后端发送指令和数据，开始进行最终的全局优化，此时，需要注意先等后端把上一张影像完成训练之后，再进行传输
-                        while True:
-                            if not self.DataPreProccesser_queue.empty():
-                                if self.DataPreProccesser_queue.get()[0] == "Progressive_finish":
-                                    print("*****************************************************************************")
-                                    print("DataPreProccesser: Start Final Refinement...")
-                                    self.args.source_path = self.source_path_list[-2]
-                                    self.args.model_path = self.model_path_list[-2]
-                                    self.args.source_path_second = self.source_path_list[-1]
-                                    self.args.model_path_second = self.model_path_list[-1]
-                                    # self.scene.model_path = self.args.model_path_second
-                                    prepare_output_and_logger(self.args, True)
-                                    shutil.copy(os.path.join(self.args.model_path, "input.ply"), os.path.join(self.args.model_path_second, "input.ply"))
-                                    shutil.copy(os.path.join(self.args.model_path, "cameras.json"), os.path.join(self.args.model_path_second, "cameras.json"))
-
-                                    msg = ["Final_Refinement", self.args.model_path_second]
-                                    self.GaussianTrainer_queue.put(msg)
-
-                                    break
-                elif Commond_from_GaussianTrainer[0] == "stop":
-                    break
-
-# 后端，第二个线程，主要用于高斯训练
-class GaussianTrainer(mp.Process):
-    # 构造函数
-    def __init__(self):
-        super().__init__()
-
-        # 获取参数配置器
-        self.args, self.lp, self.op, self.pp = GetArgs()
-
-        self.ImagesAlreadyBeTrainedIterations = None
-        self.ResetOpacityTime = 0
-
-        # 用于两个进程之间的信息传递
-        self.DataPreProccesser_queue = None
-        self.GaussianTrainer_queue = None
-        self.DataSaver_queue = None
-
-        # 记录模型的已训练次数
-        self.AlreadyTrainingIterations = 0
-        self.StartFromTrainingIterations = 0
-
-        self.Drone_Image_Block = False
-        self.Progressive_Training_Block = False
-
-        self.source_path_list, self.model_path_list = None, None
-        self.resolution_scales = [1.0]
-
-        # 该字典用于存储每一张影像对应的高斯球
-        self.Image_Visibility = {}
-        self.MaxWeightsImages = []
-
-        # 该列表用于存储一些影像的名称，仅在需要进行分块训练时会被用到
-        # 若该列表不为空，则训练影像时只会从该列表中的影像来选取
-        self.ChosenImageNames = []
-
-        # TDOM的地面分辨率
-        self.GSD_x = self.args.GSD_x
-        self.GSD_y = self.args.GSD_y
-
-        self.NewCams = []
-
-        self.commond = None
-
-        self.imagenum = self.args.StartFromImageNo
-
-        self.TDOM_Cam = None
-
-        self.TimeCost = {"GaussianInitial": 0.0, "ProgressiveTrain": 0.0, "FinalRefinement": 0.0}
-
-        self.EvaluateDiary = None
-
-        self.Finish = False
-
-        # 在SLAM数据集上可能出现训练速度快于前端处理速度的现象，因此该布尔值用于表示是否已经完成“Render_New”这个操作
-        self.RenderNewDone = False
+    '''GaussianTrainer'''
 
     def InitialGaussianTrain(self):
         # 设置初始场景的文件路径
@@ -951,7 +871,7 @@ class GaussianTrainer(mp.Process):
         self.scene = Scene(self.args, self.gaussians, load_iteration=None, shuffle=True, resolution_scales=[1.0], Do_Get_Tri_Mask=self.args.Use_Tri_Mask, No_Key_Region=self.args.No_Key)
 
         # 为当前已经读入的影像全部创建一个梯度图
-        self.GetGradLogForCams()
+        self.GetGradLogForCams(self.scene.getTrainCameras())
 
         # 进行一些训练上的初始化设置
         self.gaussians.training_setup(self.args)
@@ -962,49 +882,6 @@ class GaussianTrainer(mp.Process):
             self.Train_Gaussians(self.args.IterationFirstScene, "Initialization")
         time2 = time.time()
         self.TimeCost["GaussianInitial"] = time2 - time1
-
-        # 向前端传递信息，表示初始训练已经完成，可以开始读取后续的影像
-        self.SendImagePos_to_DataPreProccesser(True)
-
-    # 为某一部分影像创建梯度图
-    def GetGradLogForCams(self, cams=[], save=False):
-        if cams == []:
-            cams = self.scene.getTrainCameras()
-
-        for i in range(len(cams)):
-            sys.stdout.write('\r')
-            sys.stdout.write("Getting GradLog {}/{}".format(i + 1, len(cams)))
-            sys.stdout.flush()
-
-            if cams[i].GradLog == None:
-                cams[i].GradLog, cams[i].MaxGradLog = Get_LogImage(cams[i].original_image, cams[i].image_name, os.path.join(self.args.Model_Path_Dir, "GradLogTrain"), save=save)
-
-        sys.stdout.write('\n')
-
-    def ImagesAlreadyBeTrainedIterations_Set(self):
-        for NewCam in self.NewCams:
-            Equivalent_training_times = 0
-            self.ImagesAlreadyBeTrainedIterations[NewCam.image_name] = Equivalent_training_times
-            # print(f"{NewCam.image_name}: Equavelent Training Times = {Equivalent_training_times}")
-
-    # 将现有影像的位姿信息传给前端
-    def SendImagePos_to_DataPreProccesser(self, IsFirstStep=False):
-        TrainCamsDict = {}
-        for cam in self.scene.getTrainCameras():
-            TrainCamsDict[cam.image_name] = {"trans": cam.trans,
-                                             "scale": cam.scale,
-                                             "znear": cam.znear,
-                                             "zfar": cam.zfar,
-                                             "FoVx": cam.FoVx,
-                                             "FoVy": cam.FoVy}
-
-        # 向前端传递信息，表示开始读取后续的影像
-        if IsFirstStep:
-            msg = ["Progressive_First_Step", TrainCamsDict]
-            self.DataPreProccesser_queue.put(msg)
-        else:
-            msg = ["Progressive", TrainCamsDict]
-            self.DataPreProccesser_queue.put(msg)
 
     # 3DGS模型训练核心函数
     def Train_Gaussians(self, iteration, Training_Type):
@@ -1020,36 +897,6 @@ class GaussianTrainer(mp.Process):
 
         sub_iteration = 1
         while sub_iteration <= iteration:
-            # 如果需要给前端渲染影像，那么必须等这一张影像的训练至少进行一半才可以进行
-            if not self.GaussianTrainer_queue.empty() or self.commond is not None:
-                if self.commond is None:
-                    self.commond = self.GaussianTrainer_queue.get()
-                if self.commond[0] == "Render_New" and sub_iteration > iteration / 2:
-                    with torch.no_grad():
-                        NewCam = self.commond[1]
-                        render_pkg = render(NewCam, self.gaussians, self.args, self.bg, Render_Mask=NewCam.Tri_Mask)
-                        image = render_pkg["render"]
-
-                        # 向前端传递信息
-                        msg = [image]
-                        self.DataPreProccesser_queue.put(msg)
-
-                        self.commond = None
-                elif self.commond[0] == "Render_New" and sub_iteration <= iteration / 2:
-                    pass
-                elif self.commond[0] == "Final_Refinement_Prepare":
-                    pass
-                elif self.commond[0] == "Final_Refinement":
-                    pass
-                elif self.commond[0] == "RenderNewDone":
-                    self.RenderNewDone = True
-                    self.commond = None
-                else:
-                    print(self.commond)
-                    self.commond = None
-
-
-            # for sub_iteration in range(iteration):
             # 更新模型已训练次数
             self.AlreadyTrainingIterations += 1
 
@@ -1127,7 +974,7 @@ class GaussianTrainer(mp.Process):
                 loss_adj = math.floor(math.log10(load_loss)) - math.floor(math.log10(loss))
                 load_loss = load_loss / math.pow(10, loss_adj + 1.0)
 
-                # loss = loss * (1 - self.args.lambda_load) + self.args.lambda_load * load_loss
+                loss = loss * (1 - self.args.lambda_load) + self.args.lambda_load * load_loss
             # 目前暂时采用与其他情况相同的训练策略
             else:
                 # 进行影像渲染，渲染指定视点的影像
@@ -1163,19 +1010,12 @@ class GaussianTrainer(mp.Process):
                 loss_adj = math.floor(math.log10(load_loss)) - math.floor(math.log10(loss))
                 load_loss = load_loss / math.pow(10, loss_adj + 1.0)
 
-                # loss = loss * (1 - self.args.lambda_load) + self.args.lambda_load * load_loss
+                loss = loss * (1 - self.args.lambda_load) + self.args.lambda_load * load_loss
 
             # 完成这一次训练后，让当前训练影像的已训练次数+1
             if Training_Type != "Initialization":
                 self.ImagesAlreadyBeTrainedIterations[viewpoint_cam.image_name] = self.ImagesAlreadyBeTrainedIterations[
                                                                                       viewpoint_cam.image_name] + 1
-
-            # self.GaussianDiary.write(f"Iteration: {self.AlreadyTrainingIterations}, "
-            #                          f"Image Name: {viewpoint_cam.image_name}, "
-            #                          f"Image Training Times: {self.ImagesAlreadyBeTrainedIterations[viewpoint_cam.image_name]}, "
-            #                          f"Lr: {lr}, "
-            #                          f"spatial_lr_scale: {self.scene.cameras_extent}, "
-            #                          f"Gaussians: {visibility_filter.shape[0]}\n")
 
             # 反向传播
             loss.backward()
@@ -1243,14 +1083,6 @@ class GaussianTrainer(mp.Process):
                 self.gaussians.optimizer.step()
                 self.gaussians.optimizer.zero_grad(set_to_none=True)
 
-                # if sub_iteration + 1 == iteration:
-                #     if Training_Type == "On_The_Fly":
-                #         self.Phase_End("GS_Expanding")
-                #     elif Training_Type == "Final_Refinement":
-                #         self.Phase_End("Final_Refinement")
-                #     elif Training_Type == "Initialization":
-                #         self.Phase_End("Initial_GS_Optimization")
-
                 # 每训练一定次数输出一次模型评估结果
                 self.Evaluate(Training_Type, EvaluateRender)
                 EvaluateRender = False
@@ -1272,31 +1104,10 @@ class GaussianTrainer(mp.Process):
                 for i in range(len(self.NewCams)):
                     render_pkg = render(self.NewCams[i], self.gaussians, self.args, self.bg, Render_Mask=self.NewCams[0].Tri_Mask)
                     image = render_pkg["render"]
-                    self.DataSaver_queue.put(["SaveImage", image])
-                    self.DataSaver_queue.put(["SaveGT", self.NewCams[i].image_name])
+                    self.SaveImage(image)
         if Training_Type == "On_The_Fly" and self.args.render_TDOM:
             print("GaussianTrainer: Save TDOM Results...")
-            time1 = time.time()
             with torch.no_grad():
-                # W, H = 4000, 5000
-                #
-                # if self.TDOM_Cam is None:
-                #     T = torch.tensor([10.0379, 58.1547, -0.5450])  # 平移向量，表示相机位置
-                #     R = np.array([[0.98391801, 0.17848249, 0.00702562],
-                #                   [-0.17858312, 0.98375663, 0.01819236],
-                #                   [-0.00366448, -0.01915445, 0.99980982]])
-                #
-                #     FoVx = self.args.TDOM_FoVx
-                #     aspect_ratio = 8000 / 10000
-                #     FoVy = 2 * math.atan((1 / aspect_ratio) * math.tan(FoVx / 2))
-                #
-                #     # 创建 DummyCamera 实例
-                #     self.TDOM_Cam = DummyCamera(R, T, FoVx, FoVy, W, H)
-                #     # 创建 DummyPipeline 实例
-                #     self.TDOM_pipeline = DummyPipeline()
-                #
-                # TDOM = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background, Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
-
                 Temp_Cam = self.scene.getTrainCameras().copy()[0]
                 R = Temp_Cam.R
                 T = torch.tensor(Temp_Cam.T)
@@ -1325,10 +1136,7 @@ class GaussianTrainer(mp.Process):
                 self.TDOM_pipeline = DummyPipeline()
 
                 TDOM = render(self.TDOM_Cam, self.gaussians, self.TDOM_pipeline, self.background, Render_Mask=torch.ones(1, dtype=torch.bool).cuda(), TDOM=True)["render"]
-
-                time2 = time.time()
-                print(f"Time cost of TDOM rendering: {time2 - time1}s")
-                self.DataSaver_queue.put(["SaveTDOM", TDOM])
+                self.SaveTDOM(TDOM)
 
     # 对当前高斯模型进行一次评估
     def Evaluate(self, Training_Type, EvaluateRender):
@@ -1443,35 +1251,6 @@ class GaussianTrainer(mp.Process):
                 self.gaussians.get_xyz.shape[0],
                 0.0, 0.0, 0.0))
 
-    # 仅训练当前新传入的影像
-    def GetTraining_Viewpoints_SingleImage(self, single=False):
-        viewpoint_stack = []
-        if single:
-            for i in range(self.args.IterationPerMergeScene + self.args.GlobalOptimizationIteration):
-                viewpoint_stack.append(self.NewCams[0])
-        else:
-            for i in range(self.args.IterationPerMergeScene):
-                for j in range(len(self.NewCams)):
-                    viewpoint_stack.append(self.NewCams[j])
-
-            ALL_viewpoint_stack = self.scene.getTrainCameras().copy()
-            ImageIndex = [j for j in range(len(ALL_viewpoint_stack))]
-            RestImageNeed = self.args.GlobalOptimizationIteration * len(self.NewCams)
-            while RestImageNeed > 0:
-                if len(ImageIndex) > RestImageNeed:
-                    SampleIndex = random.sample(ImageIndex, RestImageNeed)
-                    for i in SampleIndex:
-                        viewpoint_stack.append(ALL_viewpoint_stack[i])
-                    RestImageNeed = 0
-                else:
-                    for i in ImageIndex:
-                        viewpoint_stack.append(ALL_viewpoint_stack[i])
-                        RestImageNeed = RestImageNeed - 1
-                        if RestImageNeed == 0:
-                            break
-
-        return viewpoint_stack
-
     # 为所有影像进行一次渲染并输出一些评估结果
     def Render_Evaluate_All_Images(self):
         with torch.no_grad():
@@ -1510,6 +1289,41 @@ class GaussianTrainer(mp.Process):
                 PSNR_File.write(str(self.AlreadyTrainingIterations) + f": {PSNR}, Visible_Gaussians_Num: {visibility_filter.shape[0]}\n")
                 PSNR_File.close()
 
+    # 仅训练当前新传入的影像
+    def GetTraining_Viewpoints_SingleImage(self, single=False):
+        viewpoint_stack = []
+        if single:
+            for i in range(self.args.IterationPerMergeScene + self.args.GlobalOptimizationIteration):
+                viewpoint_stack.append(self.NewCams[0])
+        else:
+            for i in range(self.args.IterationPerMergeScene):
+                for j in range(len(self.NewCams)):
+                    viewpoint_stack.append(self.NewCams[j])
+
+            ALL_viewpoint_stack = self.scene.getTrainCameras().copy()
+            ImageIndex = [j for j in range(len(ALL_viewpoint_stack))]
+            RestImageNeed = self.args.GlobalOptimizationIteration * len(self.NewCams)
+            while RestImageNeed > 0:
+                if len(ImageIndex) > RestImageNeed:
+                    SampleIndex = random.sample(ImageIndex, RestImageNeed)
+                    for i in SampleIndex:
+                        viewpoint_stack.append(ALL_viewpoint_stack[i])
+                    RestImageNeed = 0
+                else:
+                    for i in ImageIndex:
+                        viewpoint_stack.append(ALL_viewpoint_stack[i])
+                        RestImageNeed = RestImageNeed - 1
+                        if RestImageNeed == 0:
+                            break
+
+        return viewpoint_stack
+
+    def ImagesAlreadyBeTrainedIterations_Set(self):
+        for NewCam in self.NewCams:
+            Equivalent_training_times = 0
+            self.ImagesAlreadyBeTrainedIterations[NewCam.image_name] = Equivalent_training_times
+            # print(f"{NewCam.image_name}: Equavelent Training Times = {Equivalent_training_times}")
+
     # 保存当前模型
     def GS_Save(self, UseSecondPath=True):
         imagedirname = self.imagenum if not UseSecondPath else self.imagenum + 1
@@ -1519,158 +1333,7 @@ class GaussianTrainer(mp.Process):
         print("\n[Save At Image {}] Saving Gaussians".format(imagedirname))
         self.scene.save(imagedirname)
 
-    # 该函数将被送入到一个线程中，用于渐进式训练中的数据读取以及预处理
-    def run(self):
-        while True:
-            if self.GaussianTrainer_queue.empty():
-                continue
-            else:
-                Commond_from_DataPreProccesser = self.GaussianTrainer_queue.get()
-                if Commond_from_DataPreProccesser[0] == "init":
-                    self.InitialGaussianTrain()
-                elif Commond_from_DataPreProccesser[0] == "stop":
-                    break
-                elif Commond_from_DataPreProccesser[0] == "Render_New":
-                    with torch.no_grad():
-                        NewCam = Commond_from_DataPreProccesser[1]
-                        render_pkg = render(NewCam, self.gaussians, self.args, self.bg, Render_Mask=NewCam.Tri_Mask)
-                        image = render_pkg["render"]
-
-                        # 向前端传递信息
-                        msg = [image]
-                        self.DataPreProccesser_queue.put(msg)
-                elif Commond_from_DataPreProccesser[0] == "Progressive_Train":
-                    with torch.no_grad():
-                        time1 = time.time()
-                        print("GaussianTrainer: Get Information from DataPreProccesser...")
-
-                        self.scene.scene_info_traincam = Commond_from_DataPreProccesser[1]
-                        self.NewCams = Commond_from_DataPreProccesser[2]
-                        UpdatedTrainCamsPosList = Commond_from_DataPreProccesser[3]
-                        self.scene.cameras_extent = Commond_from_DataPreProccesser[6]
-                        if not self.args.No_Sampling:
-                            self.gaussians.expand_from_pcd(Commond_from_DataPreProccesser[4], self.scene.cameras_extent)
-                        self.scene.basic_pcd = Commond_from_DataPreProccesser[4]
-                        self.scene.model_path = Commond_from_DataPreProccesser[5]
-                        NewImagesNum = Commond_from_DataPreProccesser[7]
-
-                        self.imagenum += len(self.NewCams)
-                        print(f"-----------------------------This is {self.imagenum} image-----------------------------")
-
-                        # 还原为 dict
-                        worlds = UpdatedTrainCamsPosList[0]
-                        projs = UpdatedTrainCamsPosList[1]
-                        fulls = UpdatedTrainCamsPosList[2]
-                        centers = UpdatedTrainCamsPosList[3]
-                        names = UpdatedTrainCamsPosList[4]
-                        UpdatedTrainCamsPos = {}
-                        for i, name in enumerate(names):
-                            UpdatedTrainCamsPos[name] = [
-                                worlds[i],
-                                projs[i],
-                                fulls[i],
-                                centers[i]
-                            ]
-
-                        # 更新位姿
-                        for i in range(len(self.scene.train_cameras[1.0])):
-                            image_name = self.scene.train_cameras[1.0][i].image_name
-                            if image_name in UpdatedTrainCamsPos:
-                                self.scene.train_cameras[1.0][i].world_view_transform = UpdatedTrainCamsPos[image_name][0].cuda()
-                                self.scene.train_cameras[1.0][i].projection_matrix = UpdatedTrainCamsPos[image_name][1].cuda()
-                                self.scene.train_cameras[1.0][i].full_proj_transform = UpdatedTrainCamsPos[image_name][2].cuda()
-                                self.scene.train_cameras[1.0][i].camera_center = UpdatedTrainCamsPos[image_name][3].cuda()
-
-                        # 将新的影像加入
-                        for i in range(len(self.NewCams)):
-                            self.scene.train_cameras[1.0].append(Commond_from_DataPreProccesser[2][i])
-
-                        self.ImagesAlreadyBeTrainedIterations_Set()
-
-                        # 向前端传递信息，表示开始读取后续的影像
-                        self.SendImagePos_to_DataPreProccesser()
-
-                    # 对扩张后的场景进行训练
-                    if not self.args.skip_MergeSceneTraining:
-                        self.Train_Gaussians((self.args.IterationPerMergeScene + self.args.GlobalOptimizationIteration) * NewImagesNum, "On_The_Fly")
-
-                    time2 = time.time()
-                    self.TimeCost["ProgressiveTrain"] += time2 - time1
-
-                    # 等待self.RenderNewDone变为True
-                    while not self.RenderNewDone:
-                        if not self.GaussianTrainer_queue.empty() or self.commond is not None:
-                            if self.commond is None:
-                                self.commond = self.GaussianTrainer_queue.get()
-                            if self.commond[0] == "Render_New":
-                                with torch.no_grad():
-                                    NewCam = self.commond[1]
-                                    render_pkg = render(NewCam, self.gaussians, self.args, self.bg, Render_Mask=NewCam.Tri_Mask)
-                                    image = render_pkg["render"]
-
-                                    # 向前端传递信息
-                                    msg = [image]
-                                    self.DataPreProccesser_queue.put(msg)
-
-                                    self.commond = None
-                            elif self.commond[0] == "Final_Refinement_Prepare" or self.commond[0] == "RenderNewDone":
-                                self.RenderNewDone = True
-                                self.commond = None
-
-                    # 向前端传递信息，表示这一张影像已经完成训练，可以将下一张影像的相关信息传输到后端
-                    msg = ["Progressive_finish"]
-                    self.DataPreProccesser_queue.put(msg)
-                    self.RenderNewDone = False
-
-                elif Commond_from_DataPreProccesser[0] == "Final_Refinement":
-                    time1 = time.time()
-                    self.scene.model_path = Commond_from_DataPreProccesser[1]
-                    if not self.args.skip_GlobalOptimization:
-                        self.Train_Gaussians(self.args.FinalOptimizationIterations, "Final_Refinement")
-
-                    time2 = time.time()
-                    self.TimeCost["FinalRefinement"] += time2 - time1
-
-                    self.Finish = True
-
-                    msg = ["SaveTimeCost", self.TimeCost, self.imagenum]
-                    self.DataSaver_queue.put(msg)
-
-                    with torch.no_grad():
-                        self.GS_Save(True)
-                        self.Evaluate("Final_Refinement", True)
-
-                    # 像后端传递信息
-                    msg = ["GetDemo"]
-                    self.DataSaver_queue.put(msg)
-
-                    self.Render_Evaluate_All_Images()
-
-                    # 向前端传递信息
-                    msg = ["stop"]
-                    self.DataPreProccesser_queue.put(msg)
-
-                    self.EvaluateDiary.close()
-
-# 后端，第三个线程，主要用于在不影响训练线程的情况下进行一些输出或者保存的工作
-class DataSaver(mp.Process):
-    # 构造函数
-    def __init__(self):
-        super().__init__()
-        self.GTImageRootPath = None
-        self.GTImagePath = None
-        self.DataSaver_queue = None
-        self.SaveDirRootPath = None
-        self.Intermediate_GT_Path = None
-        self.Intermediate_RGB_Render_Path = None
-        self.Intermediate_TDOM_Render_Path = None
-        self.Intermediate_TDOM_Gray_Render_Path = None
-        self.SaveGTNumber = 0
-        self.SaveImageNumber = 0
-        self.SaveTDOMNumber = 0
-        self.MaxTDOMWidth = 0
-        self.MaxTDOMHeight = 0
-        self.StartFromImageNo = 0
+    '''DataSaver'''
 
     # 指定保存位置并创建输出文件夹
     def MakeDirs(self):
@@ -1821,70 +1484,12 @@ class DataSaver(mp.Process):
         outputfile.close()
         print("########################################################")
 
-    # 运行
-    def run(self):
-        self.MakeDirs()
-        while True:
-            if self.DataSaver_queue.empty():
-                continue
-            else:
-                Commond_from_GaussianTrainer = self.DataSaver_queue.get()
-                if Commond_from_GaussianTrainer[0] == "SaveImage":
-                    self.SaveImage(Commond_from_GaussianTrainer[1])
-                elif Commond_from_GaussianTrainer[0] == "SaveGT":
-                    self.SaveGT(Commond_from_GaussianTrainer[1])
-                elif Commond_from_GaussianTrainer[0] == "SaveTDOM":
-                    self.SaveTDOM(Commond_from_GaussianTrainer[1])
-                elif Commond_from_GaussianTrainer[0] == "GetDemo":
-                    if self.SaveImageNumber > 0:
-                        self.GetRGBDemo()
-                    if self.SaveTDOMNumber > 0:
-                        self.GetTDOMDemo()
-                elif Commond_from_GaussianTrainer[0] == "SaveTimeCost":
-                    TimeCost = Commond_from_GaussianTrainer[1]
-                    self.SaveTimeCost(TimeCost, Commond_from_GaussianTrainer[2])
-                elif Commond_from_GaussianTrainer[0] == "stop":
-                    break
-
-# 运行主要函数
-class On_the_Fly_GS:
-    def __init__(self):
-        self.DataPreProccesser_queue = mp.Queue()
-        self.GaussianTrainer_queue = mp.Queue()
-        self.DataSaver_queue = mp.Queue()
-
-        self.DataPreProccesser = DataPreProccesser()
-        self.DataPreProccesser.DataPreProccesser_queue = self.DataPreProccesser_queue
-        self.DataPreProccesser.GaussianTrainer_queue = self.GaussianTrainer_queue
-
-        self.GaussianTrainer = GaussianTrainer()
-        self.GaussianTrainer.DataPreProccesser_queue = self.DataPreProccesser_queue
-        self.GaussianTrainer.GaussianTrainer_queue = self.GaussianTrainer_queue
-        self.GaussianTrainer.DataSaver_queue = self.DataSaver_queue
-        self.GaussianTrainer.ImagesAlreadyBeTrainedIterations = self.DataPreProccesser.ImagesAlreadyBeTrainedIterations
-        self.GaussianTrainer.source_path_list = self.DataPreProccesser.source_path_list
-        self.GaussianTrainer.model_path_list = self.DataPreProccesser.model_path_list
-
-        self.DataSaver = DataSaver()
-        self.DataSaver.DataSaver_queue = self.DataSaver_queue
-        self.DataSaver.SaveDirRootPath = os.path.join(self.GaussianTrainer.args.Model_Path_Dir, "Intermediate_Results")
-        self.DataSaver.GTImageRootPath = self.GaussianTrainer.args.Source_Path_Dir
-        self.DataSaver.StartFromImageNo = self.GaussianTrainer.args.StartFromImageNo
-
-        print("Start Thread...\n")
-        self.GaussianTrainer_Thread = mp.Process(target=self.GaussianTrainer.run)
-        self.GaussianTrainer_Thread.start()
-        self.DataSaver_Thread = mp.Process(target=self.DataSaver.run)
-        self.DataSaver_Thread.start()
-        self.DataPreProccesser.run()
-
-        self.GaussianTrainer_queue.put(["stop"])
-        self.GaussianTrainer_Thread.join()
-        self.DataSaver_queue.put(["stop"])
-        self.DataSaver_Thread.join()
-        print("\nAll Done!!!")
-
 if __name__ == "__main__":
     mp.set_start_method("spawn")
 
-    Run = On_the_Fly_GS()
+    atdom = ATDOM()
+    atdom.run("init")
+    atdom.run("active")
+    atdom.run("over")
+
+    print("\nAll Done!!!")

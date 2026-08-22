@@ -458,11 +458,15 @@ When you need to close On-the-FlySfM.exe, it is recommended to use Taskmgr.exe t
 # BibTex
 
 ```shell
-@article{ATDOM,
-  title={A-TDOM: Active TDOM via On-the-Fly 3DGS},
-  author={Xu, Yiwei and Wang, Xiang and Yu, Yifei and Gan, Wentian and Morelli, Luca and Perda, Giulio and Xiao, Xiongwu and Zhan, Zongqian and Wang, Xin and Remondino, Fabio},
-  journal={arXiv preprint arXiv:2509.12759},
-  year={2025}
+@article{xu2026tdom,
+  title={A-TDOM: Active TDOM via on-the-fly 3DGS},
+  author={Xu, Yiwei and Wang, Xiang and Yu, Yifei and Gan, Wentian and Morelli, Luca and Perda, Giulio and Wang, Xin and Zhan, Zongqian and Remondino, Fabio},
+  journal={International Journal of Computer Vision},
+  volume={134},
+  number={8},
+  pages={370},
+  year={2026},
+  publisher={Springer}
 }
 
 ```
